@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,25 +43,15 @@ private val locale = Locale.forLanguageTag("ru-RU")
 private fun LocalDate.display(): String =
     format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
 
-private fun parseDate(s: String): LocalDate? =
-    runCatching { LocalDate.parse(s) }.getOrNull()
+private fun parseDate(value: String): LocalDate? =
+    runCatching { LocalDate.parse(value) }.getOrNull()
 
-private fun decimal(s: String): Double =
-    s.replace(',', '.').toDoubleOrNull()
+private fun decimal(value: String): Double =
+    value.replace(',', '.').toDoubleOrNull()
         ?.takeIf { it.isFinite() && it >= 0.0 } ?: 0.0
 
-private fun rubles(value: Double): String =
+private fun money(value: Double): String =
     NumberFormat.getCurrencyInstance(locale).format(value)
-
-private fun shiftedDate(
-    date: LocalDate,
-    months: Long
-): LocalDate {
-    val target = YearMonth.from(date).plusMonths(months)
-    return target.atDay(
-        date.dayOfMonth.coerceAtMost(target.lengthOfMonth())
-    )
-}
 
 private data class ShiftPeriod(
     val start: LocalDate,
@@ -74,33 +64,39 @@ private data class ShiftPeriod(
     val progress: Float
 )
 
+/*
+ * Расчёт без отдельного интервала.
+ * Расстояние между заездами = 2 * расстояние
+ * между первым заездом и первым выездом.
+ *
+ * 25.10 -> 10.12 -> следующий заезд 25.01.
+ */
 private fun periodFor(
     day: LocalDate,
-    arrival: LocalDate,
-    departure: LocalDate,
-    interval: Int
+    firstArrival: LocalDate,
+    firstDeparture: LocalDate
 ): ShiftPeriod {
-    val months = interval.coerceIn(1, 24).toLong()
-    val difference = ChronoUnit.MONTHS.between(
-        YearMonth.from(arrival),
-        YearMonth.from(day)
+    val shiftDistance = ChronoUnit.DAYS.between(
+        firstArrival,
+        firstDeparture
+    ).coerceAtLeast(1)
+
+    val cycleDays = shiftDistance * 2
+    val difference = ChronoUnit.DAYS.between(
+        firstArrival,
+        day
     )
 
-    var index = Math.floorDiv(difference, months)
+    val index = Math.floorDiv(difference, cycleDays)
 
-    fun start(i: Long) = shiftedDate(arrival, i * months)
-    fun end(i: Long) = shiftedDate(departure, i * months)
+    val start = firstArrival.plusDays(index * cycleDays)
+    val end = firstDeparture.plusDays(index * cycleDays)
+    val next = start.plusDays(cycleDays)
 
-    while (day.isBefore(start(index))) index--
-    while (!day.isBefore(start(index + 1))) index++
+    val working = !day.isAfter(end)
 
-    val shiftStart = start(index)
-    val shiftEnd = end(index)
-    val next = start(index + 1)
-    val working = !day.isAfter(shiftEnd)
-
-    val beginning = if (working) shiftStart else shiftEnd.plusDays(1)
-    val ending = if (working) shiftEnd else next.minusDays(1)
+    val beginning = if (working) start else end.plusDays(1)
+    val ending = if (working) end else next.minusDays(1)
 
     val total = (
         ChronoUnit.DAYS.between(beginning, ending) + 1
@@ -111,14 +107,14 @@ private fun periodFor(
     ).coerceIn(0, total)
 
     return ShiftPeriod(
-        start = shiftStart,
-        end = shiftEnd,
+        start = start,
+        end = end,
         nextStart = next,
         atWork = working,
         elapsed = elapsed,
         total = total,
         remaining = total - elapsed,
-        progress = elapsed.toFloat() / total
+        progress = elapsed.toFloat() / total.toFloat()
     )
 }
 
@@ -131,24 +127,24 @@ private data class Payment(
 private fun readPayments(raw: String): List<Payment> =
     runCatching {
         val array = JSONArray(raw)
-        (0 until array.length()).map {
-            val item = array.getJSONObject(it)
+        (0 until array.length()).map { index ->
+            val item = array.getJSONObject(index)
             Payment(
-                item.optString("date"),
-                item.optDouble("amount"),
-                item.optString("type")
+                date = item.optString("date"),
+                amount = item.optDouble("amount"),
+                type = item.optString("type")
             )
         }
     }.getOrDefault(emptyList())
 
 private fun writePayments(items: List<Payment>): String {
     val array = JSONArray()
-    items.forEach {
+    items.forEach { payment ->
         array.put(
             JSONObject()
-                .put("date", it.date)
-                .put("amount", it.amount)
-                .put("type", it.type)
+                .put("date", payment.date)
+                .put("amount", payment.amount)
+                .put("type", payment.type)
         )
     }
     return array.toString()
@@ -158,7 +154,6 @@ private data class Settings(
     val name: String = "",
     val arrival: String = "",
     val departure: String = "",
-    val interval: String = "",
     val hourly: String = "",
     val hours: String = "",
     val workDays: String = "",
@@ -181,73 +176,83 @@ private data class Settings(
     val notes: String = ""
 )
 
-private fun readSettings(p: SharedPreferences): Settings =
-    Settings(
-        name = p.getString("name", "") ?: "",
-        arrival = p.getString(
-            "arrival_date",
-            p.getString("start", "") ?: ""
-        ) ?: "",
-        departure = p.getString("departure_date", "") ?: "",
-        interval = p.getString("interval_months", "") ?: "",
-        hourly = p.getString("hourly", "") ?: "",
-        hours = p.getString("hours", "") ?: "",
-        workDays = p.getString("work_days", "") ?: "",
-        restDays = p.getString("rest_days", "") ?: "",
-        coefficient = p.getString("coefficient", "") ?: "",
-        north = p.getString("north", "") ?: "",
-        premium = p.getString("bonus", "") ?: "",
-        shiftAllowance = p.getString("shift_allowance", "") ?: "",
-        travelHours = p.getString("travel_hours", "") ?: "",
-        intershiftHours = p.getString("intershift_hours", "") ?: "",
-        intershiftRate = p.getString("intershift_rate", "") ?: "",
-        tax = p.getString("tax", "") ?: "",
-        meals = p.getString("meals", "") ?: "",
-        enforcement = p.getString("enforcement", "") ?: "",
-        otherDeductions = p.getString("other_deductions", "") ?: "",
-        advanceDay = p.getString("advance", "") ?: "",
-        salaryDay = p.getString("payday", "") ?: "",
-        advanceMethod = p.getString(
-            "advance_rule",
-            "По отработанным часам"
-        ) ?: "По отработанным часам",
-        fixedAdvance = p.getString("fixed_advance", "") ?: "",
-        notes = p.getString("pay_notes", "") ?: ""
-    )
+private fun readSettings(
+    preferences: SharedPreferences
+): Settings = Settings(
+    name = preferences.getString("name", "") ?: "",
+    arrival = preferences.getString(
+        "arrival_date",
+        preferences.getString("start", "") ?: ""
+    ) ?: "",
+    departure = preferences.getString("departure_date", "") ?: "",
+    hourly = preferences.getString("hourly", "") ?: "",
+    hours = preferences.getString("hours", "") ?: "",
+    workDays = preferences.getString("work_days", "") ?: "",
+    restDays = preferences.getString("rest_days", "") ?: "",
+    coefficient = preferences.getString("coefficient", "") ?: "",
+    north = preferences.getString("north", "") ?: "",
+    premium = preferences.getString("bonus", "") ?: "",
+    shiftAllowance = preferences.getString(
+        "shift_allowance", ""
+    ) ?: "",
+    travelHours = preferences.getString("travel_hours", "") ?: "",
+    intershiftHours = preferences.getString(
+        "intershift_hours", ""
+    ) ?: "",
+    intershiftRate = preferences.getString(
+        "intershift_rate", ""
+    ) ?: "",
+    tax = preferences.getString("tax", "") ?: "",
+    meals = preferences.getString("meals", "") ?: "",
+    enforcement = preferences.getString("enforcement", "") ?: "",
+    otherDeductions = preferences.getString(
+        "other_deductions", ""
+    ) ?: "",
+    advanceDay = preferences.getString("advance", "") ?: "",
+    salaryDay = preferences.getString("payday", "") ?: "",
+    advanceMethod = preferences.getString(
+        "advance_rule",
+        "По отработанным часам"
+    ) ?: "По отработанным часам",
+    fixedAdvance = preferences.getString(
+        "fixed_advance", ""
+    ) ?: "",
+    notes = preferences.getString("pay_notes", "") ?: ""
+)
 
 private fun saveSettings(
-    p: SharedPreferences,
-    s: Settings
+    preferences: SharedPreferences,
+    settings: Settings
 ) {
-    p.edit()
-        .putString("name", s.name)
-        .putString("arrival_date", s.arrival)
-        .putString("departure_date", s.departure)
-        .putString("interval_months", s.interval)
-        .putString("hourly", s.hourly)
-        .putString("hours", s.hours)
-        .putString("work_days", s.workDays)
-        .putString("rest_days", s.restDays)
-        .putString("coefficient", s.coefficient)
-        .putString("north", s.north)
-        .putString("bonus", s.premium)
-        .putString("shift_allowance", s.shiftAllowance)
-        .putString("travel_hours", s.travelHours)
-        .putString("intershift_hours", s.intershiftHours)
-        .putString("intershift_rate", s.intershiftRate)
-        .putString("tax", s.tax)
-        .putString("meals", s.meals)
-        .putString("enforcement", s.enforcement)
-        .putString("other_deductions", s.otherDeductions)
-        .putString("advance", s.advanceDay)
-        .putString("payday", s.salaryDay)
-        .putString("advance_rule", s.advanceMethod)
-        .putString("fixed_advance", s.fixedAdvance)
-        .putString("pay_notes", s.notes)
+    preferences.edit()
+        .putString("name", settings.name)
+        .putString("arrival_date", settings.arrival)
+        .putString("departure_date", settings.departure)
+        .putString("hourly", settings.hourly)
+        .putString("hours", settings.hours)
+        .putString("work_days", settings.workDays)
+        .putString("rest_days", settings.restDays)
+        .putString("coefficient", settings.coefficient)
+        .putString("north", settings.north)
+        .putString("bonus", settings.premium)
+        .putString("shift_allowance", settings.shiftAllowance)
+        .putString("travel_hours", settings.travelHours)
+        .putString("intershift_hours", settings.intershiftHours)
+        .putString("intershift_rate", settings.intershiftRate)
+        .putString("tax", settings.tax)
+        .putString("meals", settings.meals)
+        .putString("enforcement", settings.enforcement)
+        .putString("other_deductions", settings.otherDeductions)
+        .putString("advance", settings.advanceDay)
+        .putString("payday", settings.salaryDay)
+        .putString("advance_rule", settings.advanceMethod)
+        .putString("fixed_advance", settings.fixedAdvance)
+        .putString("pay_notes", settings.notes)
         .apply()
 }
 
 class MainActivity : FragmentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -257,68 +262,98 @@ class MainActivity : FragmentActivity() {
         )
 
         setContent {
-            var unlocked by remember { mutableStateOf(false) }
+            var unlocked by remember {
+                mutableStateOf(false)
+            }
+
             var setupComplete by remember {
                 mutableStateOf(
-                    preferences.getBoolean("setup_complete", false)
+                    preferences.getBoolean(
+                        "setup_complete",
+                        false
+                    )
                 )
             }
+
             var settings by remember {
                 mutableStateOf(readSettings(preferences))
             }
 
-            val owner = LocalLifecycleOwner.current
-            var leftForeground by remember { mutableStateOf(false) }
+            val lifecycleOwner = LocalLifecycleOwner.current
+            var wentToBackground by remember {
+                mutableStateOf(false)
+            }
 
-            DisposableEffect(owner) {
+            DisposableEffect(lifecycleOwner) {
                 val observer = LifecycleEventObserver { _, event ->
                     when (event) {
                         Lifecycle.Event.ON_STOP -> {
-                            if (unlocked) leftForeground = true
-                        }
-                        Lifecycle.Event.ON_START -> {
-                            if (leftForeground) {
-                                unlocked = false
-                                leftForeground = false
+                            if (unlocked) {
+                                wentToBackground = true
                             }
                         }
+
+                        Lifecycle.Event.ON_START -> {
+                            if (wentToBackground) {
+                                unlocked = false
+                                wentToBackground = false
+                            }
+                        }
+
                         else -> Unit
                     }
                 }
-                owner.lifecycle.addObserver(observer)
+
+                lifecycleOwner.lifecycle.addObserver(observer)
+
                 onDispose {
-                    owner.lifecycle.removeObserver(observer)
+                    lifecycleOwner.lifecycle.removeObserver(observer)
                 }
             }
 
             AppTheme {
-                if (!unlocked) {
-                    SecurityScreen(
-                        onUnlocked = { unlocked = true }
-                    )
-                } else if (!setupComplete) {
-                    SetupWizard(
-                        initial = settings,
-                        onFinish = {
-                            settings = it
-                            saveSettings(preferences, it)
-                            preferences.edit()
-                                .putBoolean("setup_complete", true)
-                                .apply()
-                            setupComplete = true
-                        }
-                    )
-                } else {
-                    MainApp(
-                        settings = settings,
-                        onSettingsChange = {
-                            settings = it
-                            saveSettings(preferences, it)
-                        },
-                        preferences = preferences,
-                        onLock = { unlocked = false },
-                        organizerContext = this@MainActivity
-                    )
+                when {
+                    !unlocked -> {
+                        SecurityScreen(
+                            onUnlocked = {
+                                unlocked = true
+                            }
+                        )
+                    }
+
+                    !setupComplete -> {
+                        SetupWizard(
+                            initial = settings,
+                            onFinish = { result ->
+                                settings = result
+                                saveSettings(preferences, result)
+
+                                preferences.edit()
+                                    .putBoolean(
+                                        "setup_complete",
+                                        true
+                                    )
+                                    .apply()
+
+                                setupComplete = true
+                            }
+                        )
+                    }
+
+                    else -> {
+                        MainApp(
+                            settings = settings,
+                            onSettingsChange = { result ->
+                                settings = result
+                                saveSettings(preferences, result)
+                            },
+                            preferences = preferences,
+                            onLock = {
+                                unlocked = false
+                            },
+                            organizerContext = this@MainActivity
+                        )
+                    }
                 }
             }
         }
@@ -346,36 +381,52 @@ private fun SetupWizard(
     initial: Settings,
     onFinish: (Settings) -> Unit
 ) {
-    var s by remember { mutableStateOf(initial) }
-    var step by remember { mutableIntStateOf(0) }
+    var settings by remember {
+        mutableStateOf(initial)
+    }
 
-    val arrival = parseDate(s.arrival)
-    val departure = parseDate(s.departure)
-    val interval = s.interval.toIntOrNull()
+    var step by remember {
+        mutableIntStateOf(0)
+    }
+
+    val arrival = parseDate(settings.arrival)
+    val departure = parseDate(settings.departure)
 
     val scheduleValid =
         arrival != null &&
         departure != null &&
-        interval != null &&
-        interval in 1..24 &&
-        departure.isAfter(arrival) &&
-        departure.isBefore(shiftedDate(arrival, interval.toLong()))
+        departure.isAfter(arrival)
 
-    val valid = when (step) {
-        0 -> s.name.trim().isNotBlank()
+    val workDays = settings.workDays.toIntOrNull()
+    val restDays = settings.restDays.toIntOrNull()
+
+    val stepValid = when (step) {
+        0 -> settings.name.trim().isNotEmpty()
+
         1 -> scheduleValid
-        2 -> decimal(s.hourly) > 0 &&
-            decimal(s.hours) in 0.01..24.0 &&
-            s.workDays.toIntOrNull() in 1..31 &&
-            s.restDays.toIntOrNull() in 0..31
+
+        2 -> {
+            decimal(settings.hourly) > 0.0 &&
+                decimal(settings.hours) > 0.0 &&
+                decimal(settings.hours) <= 24.0 &&
+                workDays != null &&
+                workDays in 1..366 &&
+                restDays != null &&
+                restDays in 0..366
+        }
+
         3 -> true
         4 -> true
-        5 -> s.advanceDay.toIntOrNull() in 1..31 &&
-            s.salaryDay.toIntOrNull() in 1..31 &&
-            (
-                s.advanceMethod != "Фиксированная сумма" ||
-                decimal(s.fixedAdvance) > 0
-            )
+
+        5 -> {
+            settings.advanceDay.toIntOrNull() in 1..31 &&
+                settings.salaryDay.toIntOrNull() in 1..31 &&
+                (
+                    settings.advanceMethod != "Фиксированная сумма" ||
+                        decimal(settings.fixedAdvance) > 0.0
+                )
+        }
+
         else -> true
     }
 
@@ -391,6 +442,7 @@ private fun SetupWizard(
             color = Color.White,
             fontWeight = FontWeight.Black
         )
+
         Text(
             "НАСТРОЙКА ПРИЛОЖЕНИЯ",
             color = mint,
@@ -407,7 +459,12 @@ private fun SetupWizard(
         )
 
         Spacer(Modifier.height(10.dp))
-        Text("Шаг ${step + 1} из 7", color = secondary)
+
+        Text(
+            "Шаг ${step + 1} из 7",
+            color = secondary
+        )
+
         Spacer(Modifier.height(18.dp))
 
         Column(
@@ -422,45 +479,58 @@ private fun SetupWizard(
                         "Давай знакомиться",
                         "Как к тебе обращаться?"
                     )
-                    Field("Имя", s.name) {
-                        s = s.copy(name = it)
+
+                    Field("Имя", settings.name) {
+                        settings = settings.copy(name = it)
                     }
                 }
 
                 1 -> {
                     StepTitle(
                         "График вахт",
-                        "Выбери реальные даты заезда и выезда. Никакие даты не установлены за тебя."
+                        "Выбери дату заезда и дату выезда домой."
                     )
-                    DateField("Дата заезда", s.arrival) {
-                        s = s.copy(arrival = it)
-                    }
-                    DateField("Дата выезда домой", s.departure) {
-                        s = s.copy(departure = it)
-                    }
-                    Field(
-                        "Интервал между заездами, месяцев",
-                        s.interval,
-                        true
+
+                    DateField(
+                        "Дата заезда",
+                        settings.arrival
                     ) {
-                        s = s.copy(interval = it)
+                        settings = settings.copy(arrival = it)
+                    }
+
+                    DateField(
+                        "Дата выезда домой",
+                        settings.departure
+                    ) {
+                        settings = settings.copy(departure = it)
                     }
 
                     if (arrival != null && departure != null) {
                         val days = ChronoUnit.DAYS.between(
-                            arrival, departure
+                            arrival,
+                            departure
                         ) + 1
+
                         Text(
                             if (days > 0)
-                                "Продолжительность первой вахты: $days дней"
+                                "Продолжительность вахты: $days дней"
                             else
-                                "Дата выезда должна быть позже даты заезда",
+                                "Выезд должен быть позже заезда",
                             color = if (days > 0) mint else gold
                         )
+
+                        if (days > 1) {
+                            val next = departure.plusDays(days - 1)
+
+                            Text(
+                                "Расчётный следующий заезд: ${next.display()}",
+                                color = mint
+                            )
+                        }
                     }
 
                     Text(
-                        "Например, при интервале 3 месяца следующий заезд рассчитывается через 3 календарных месяца. Можно выбрать другое значение.",
+                        "Следующие заезды рассчитываются автоматически. Для прогноза используется чередование вахты и межвахты сопоставимой продолжительности.",
                         color = secondary,
                         fontSize = 12.sp
                     )
@@ -471,144 +541,193 @@ private fun SetupWizard(
                         "Рабочее время",
                         "Укажи свой режим работы и часовую ставку."
                     )
-                    Field("ЧТС, ₽/час", s.hourly, true) {
-                        s = s.copy(hourly = it)
+
+                    Field(
+                        "ЧТС, ₽/час",
+                        settings.hourly,
+                        true
+                    ) {
+                        settings = settings.copy(hourly = it)
                     }
-                    Field("Часов в смене", s.hours, true) {
-                        s = s.copy(hours = it)
+
+                    Field(
+                        "Часов в смене",
+                        settings.hours,
+                        true
+                    ) {
+                        settings = settings.copy(hours = it)
                     }
+
                     Field(
                         "Рабочих дней подряд",
-                        s.workDays,
+                        settings.workDays,
                         true
                     ) {
-                        s = s.copy(workDays = it)
+                        settings = settings.copy(workDays = it)
                     }
+
                     Field(
                         "Выходных дней подряд",
-                        s.restDays,
+                        settings.restDays,
                         true
                     ) {
-                        s = s.copy(restDays = it)
+                        settings = settings.copy(restDays = it)
                     }
+
                     Text(
-                        "Если выходных нет, укажи 0. Расчётный счётчик использует этот график.",
+                        "Можно указать 46, 60 и более рабочих дней подряд. Если выходных нет, введи 0.",
                         color = secondary,
                         fontSize = 12.sp
                     )
+
+                    if (!stepValid) {
+                        Text(
+                            "Проверь ЧТС, часы смены и режим работы. Рабочие дни: от 1 до 366, выходные: от 0 до 366.",
+                            color = gold,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
 
                 3 -> {
                     StepTitle(
                         "Надбавки и премии",
-                        "Заполни только те начисления, которые применяются у тебя."
+                        "Укажи только применяемые к тебе начисления."
                     )
+
                     Field(
                         "Районный коэффициент, например 1,2",
-                        s.coefficient,
+                        settings.coefficient,
                         true
                     ) {
-                        s = s.copy(coefficient = it)
+                        settings = settings.copy(coefficient = it)
                     }
+
                     Field(
                         "Северная надбавка, %",
-                        s.north,
+                        settings.north,
                         true
                     ) {
-                        s = s.copy(north = it)
+                        settings = settings.copy(north = it)
                     }
+
                     Field(
                         "Производственная премия, %",
-                        s.premium,
+                        settings.premium,
                         true
                     ) {
-                        s = s.copy(premium = it)
+                        settings = settings.copy(premium = it)
                     }
+
                     Field(
                         "Вахтовая надбавка, ₽/день",
-                        s.shiftAllowance,
+                        settings.shiftAllowance,
                         true
                     ) {
-                        s = s.copy(shiftAllowance = it)
+                        settings = settings.copy(
+                            shiftAllowance = it
+                        )
                     }
+
                     Field(
                         "Оплачиваемых часов дороги за вахту",
-                        s.travelHours,
+                        settings.travelHours,
                         true
                     ) {
-                        s = s.copy(travelHours = it)
+                        settings = settings.copy(travelHours = it)
                     }
                 }
 
                 4 -> {
                     StepTitle(
                         "Межвахта и удержания",
-                        "Необязательные параметры можно оставить пустыми."
+                        "Необязательные параметры можно пропустить."
                     )
+
                     Field(
                         "Оплачиваемых часов межвахты",
-                        s.intershiftHours,
+                        settings.intershiftHours,
                         true
                     ) {
-                        s = s.copy(intershiftHours = it)
+                        settings = settings.copy(
+                            intershiftHours = it
+                        )
                     }
+
                     Field(
                         "Ставка оплаты межвахты, ₽/час",
-                        s.intershiftRate,
+                        settings.intershiftRate,
                         true
                     ) {
-                        s = s.copy(intershiftRate = it)
+                        settings = settings.copy(
+                            intershiftRate = it
+                        )
                     }
-                    Field("НДФЛ, %", s.tax, true) {
-                        s = s.copy(tax = it)
+
+                    Field("НДФЛ, %", settings.tax, true) {
+                        settings = settings.copy(tax = it)
                     }
+
                     Field(
                         "Удержание за питание, ₽",
-                        s.meals,
+                        settings.meals,
                         true
                     ) {
-                        s = s.copy(meals = it)
+                        settings = settings.copy(meals = it)
                     }
+
                     Field(
                         "Исполнительные удержания, ₽",
-                        s.enforcement,
+                        settings.enforcement,
                         true
                     ) {
-                        s = s.copy(enforcement = it)
+                        settings = settings.copy(
+                            enforcement = it
+                        )
                     }
+
                     Field(
                         "Другие удержания, ₽",
-                        s.otherDeductions,
+                        settings.otherDeductions,
                         true
                     ) {
-                        s = s.copy(otherDeductions = it)
+                        settings = settings.copy(
+                            otherDeductions = it
+                        )
                     }
                 }
 
                 5 -> {
                     StepTitle(
                         "Выплата зарплаты",
-                        "Укажи свои даты аванса и окончательного расчёта."
+                        "Укажи даты аванса и зарплаты."
                     )
+
                     Field(
                         "Число аванса",
-                        s.advanceDay,
+                        settings.advanceDay,
                         true
                     ) {
-                        s = s.copy(advanceDay = it)
+                        settings = settings.copy(
+                            advanceDay = it
+                        )
                     }
+
                     Field(
                         "Число зарплаты",
-                        s.salaryDay,
+                        settings.salaryDay,
                         true
                     ) {
-                        s = s.copy(salaryDay = it)
+                        settings = settings.copy(
+                            salaryDay = it
+                        )
                     }
 
                     Text(
                         "Как рассчитывается аванс?",
                         color = Color.White
                     )
+
                     listOf(
                         "По отработанным часам",
                         "Фиксированная сумма",
@@ -618,59 +737,92 @@ private fun SetupWizard(
                             Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    s = s.copy(advanceMethod = method)
+                                    settings = settings.copy(
+                                        advanceMethod = method
+                                    )
                                 },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
-                                selected = s.advanceMethod == method,
+                                selected =
+                                    settings.advanceMethod == method,
                                 onClick = {
-                                    s = s.copy(advanceMethod = method)
+                                    settings = settings.copy(
+                                        advanceMethod = method
+                                    )
                                 }
                             )
-                            Text(method, color = Color.White)
+
+                            Text(
+                                method,
+                                color = Color.White
+                            )
                         }
                     }
 
-                    if (s.advanceMethod == "Фиксированная сумма") {
+                    if (
+                        settings.advanceMethod ==
+                        "Фиксированная сумма"
+                    ) {
                         Field(
                             "Сумма аванса, ₽",
-                            s.fixedAdvance,
+                            settings.fixedAdvance,
                             true
                         ) {
-                            s = s.copy(fixedAdvance = it)
+                            settings = settings.copy(
+                                fixedAdvance = it
+                            )
                         }
                     }
 
                     Field(
                         "Другие особенности расчёта",
-                        s.notes
+                        settings.notes
                     ) {
-                        s = s.copy(notes = it)
+                        settings = settings.copy(notes = it)
                     }
                 }
 
                 6 -> {
                     StepTitle(
                         "Всё готово",
-                        "Проверь основные данные. Их всегда можно изменить."
+                        "Проверь введённые данные."
                     )
+
                     Panel("ТВОИ НАСТРОЙКИ") {
-                        Info("Имя", s.name)
-                        Info("Заезд", arrival?.display() ?: "—")
-                        Info("Выезд", departure?.display() ?: "—")
-                        Info("Интервал", "${s.interval} мес.")
-                        Info("ЧТС", "${s.hourly} ₽/час")
-                        Info("Смена", "${s.hours} часов")
+                        Info("Имя", settings.name)
+                        Info(
+                            "Заезд",
+                            arrival?.display() ?: "—"
+                        )
+                        Info(
+                            "Выезд",
+                            departure?.display() ?: "—"
+                        )
+                        Info(
+                            "ЧТС",
+                            "${settings.hourly} ₽/час"
+                        )
+                        Info(
+                            "Смена",
+                            "${settings.hours} часов"
+                        )
                         Info(
                             "Работа / отдых",
-                            "${s.workDays} / ${s.restDays} дней"
+                            "${settings.workDays} / ${settings.restDays} дней"
                         )
-                        Info("Аванс", "${s.advanceDay} числа")
-                        Info("Зарплата", "${s.salaryDay} числа")
+                        Info(
+                            "Аванс",
+                            "${settings.advanceDay} числа"
+                        )
+                        Info(
+                            "Зарплата",
+                            "${settings.salaryDay} числа"
+                        )
                     }
+
                     Text(
-                        "Личные данные хранятся в настройках приложения. Незаполненные необязательные начисления не учитываются.",
+                        "После завершения все параметры можно изменить в настройках.",
                         color = secondary,
                         fontSize = 12.sp
                     )
@@ -695,15 +847,20 @@ private fun SetupWizard(
 
             Button(
                 onClick = {
-                    if (step < 6) step++
-                    else onFinish(s)
+                    if (step < 6) {
+                        step++
+                    } else {
+                        onFinish(settings)
+                    }
                 },
-                enabled = valid,
+                enabled = stepValid,
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    if (step == 6) "Начать работу"
-                    else "Продолжить"
+                    if (step == 6)
+                        "Начать работу"
+                    else
+                        "Продолжить"
                 )
             }
         }
@@ -718,7 +875,10 @@ private fun MainApp(
     onLock: () -> Unit,
     organizerContext: Context
 ) {
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by remember {
+        mutableIntStateOf(0)
+    }
+
     var tick by remember {
         mutableLongStateOf(System.currentTimeMillis())
     }
@@ -733,37 +893,40 @@ private fun MainApp(
     val now = remember(tick / 1000) {
         LocalDateTime.now()
     }
+
     val today = now.toLocalDate()
 
     val arrival = parseDate(settings.arrival)
     val departure = parseDate(settings.departure)
-    val months = settings.interval.toIntOrNull()
 
     val valid =
         arrival != null &&
         departure != null &&
-        months != null &&
-        months in 1..24 &&
-        departure.isAfter(arrival) &&
-        departure.isBefore(
-            shiftedDate(arrival, months.toLong())
-        )
+        departure.isAfter(arrival)
 
     val period = if (valid) {
-        periodFor(today, arrival!!, departure!!, months!!)
-    } else null
+        periodFor(
+            today,
+            arrival!!,
+            departure!!
+        )
+    } else {
+        null
+    }
 
     val hourly = decimal(settings.hourly)
     val hours = decimal(settings.hours)
+
     val coefficient = decimal(settings.coefficient)
-        .takeIf { it > 0 } ?: 1.0
+        .takeIf { it > 0.0 } ?: 1.0
 
     val workDays = (
         settings.workDays.toIntOrNull() ?: 1
-    ).coerceIn(1, 31)
+    ).coerceIn(1, 366)
+
     val restDays = (
         settings.restDays.toIntOrNull() ?: 0
-    ).coerceIn(0, 31)
+    ).coerceIn(0, 366)
 
     val north = decimal(settings.north) / 100.0
     val premium = decimal(settings.premium) / 100.0
@@ -787,61 +950,82 @@ private fun MainApp(
             daysInShift
         }
 
-        val cycle = workDays + restDays
+        val workCycle = workDays + restDays
 
-        fun worked(dayIndex: Long): Boolean =
-            (dayIndex % cycle) < workDays
+        fun isWorkingDay(index: Long): Boolean =
+            (index % workCycle) < workDays
 
-        var workedDays = 0L
-        for (i in 0 until completed) {
-            if (worked(i)) workedDays++
+        var completedWorkDays = 0L
+
+        for (index in 0 until completed) {
+            if (isWorkingDay(index)) {
+                completedWorkDays++
+            }
         }
 
-        val fraction = if (
+        val dayFraction = if (
             period.atWork &&
-            worked(completed) &&
-            completed < daysInShift
+            completed < daysInShift &&
+            isWorkingDay(completed)
         ) {
             now.toLocalTime().toSecondOfDay() / 86400.0
-        } else 0.0
+        } else {
+            0.0
+        }
 
         val estimatedHours =
-            (workedDays + fraction) * hours
+            (completedWorkDays + dayFraction) * hours
 
         val base = estimatedHours * hourly
 
-        val shiftDaysElapsed =
-            completed + if (period.atWork) fraction else 0.0
+        val elapsedShiftDays =
+            completed +
+                if (period.atWork) dayFraction else 0.0
 
         base * (coefficient + north + premium) +
-            shiftDaysElapsed * decimal(settings.shiftAllowance)
+            elapsedShiftDays *
+                decimal(settings.shiftAllowance)
     }
 
     var payments by remember {
         mutableStateOf(
             readPayments(
-                preferences.getString("payments", "[]") ?: "[]"
+                preferences.getString(
+                    "payments",
+                    "[]"
+                ) ?: "[]"
             )
         )
     }
 
     fun persistPayments(items: List<Payment>) {
         payments = items
+
         preferences.edit()
-            .putString("payments", writePayments(items))
+            .putString(
+                "payments",
+                writePayments(items)
+            )
             .apply()
     }
 
     Column(
-        Modifier.fillMaxSize().background(navy)
+        Modifier
+            .fillMaxSize()
+            .background(navy)
     ) {
         Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .then(
-                    if (tab == 3) Modifier
-                    else Modifier.verticalScroll(rememberScrollState())
+                    if (tab == 3) {
+                        Modifier
+                    } else {
+                        Modifier.verticalScroll(
+                            rememberScrollState()
+                        )
+                    }
                 )
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -852,9 +1036,12 @@ private fun MainApp(
                 fontSize = 30.sp,
                 fontWeight = FontWeight.Black
             )
+
             Text(
-                if (settings.name.isBlank()) "Добро пожаловать"
-                else "Привет, ${settings.name}!",
+                if (settings.name.isBlank())
+                    "Добро пожаловать"
+                else
+                    "Привет, ${settings.name}!",
                 color = secondary,
                 fontSize = 17.sp
             )
@@ -867,14 +1054,22 @@ private fun MainApp(
                                 "Настрой даты заезда и выезда",
                                 color = gold
                             )
-                            Button(onClick = { tab = 4 }) {
+
+                            Button(
+                                onClick = { tab = 4 }
+                            ) {
                                 Text("Открыть настройки")
                             }
                         } else {
                             Text(
-                                if (period.atWork) "НА ВАХТЕ"
-                                else "НА МЕЖВАХТЕ",
-                                color = if (period.atWork) mint else blue,
+                                if (period.atWork)
+                                    "НА ВАХТЕ"
+                                else
+                                    "НА МЕЖВАХТЕ",
+                                color = if (period.atWork)
+                                    mint
+                                else
+                                    blue,
                                 fontWeight = FontWeight.Bold
                             )
 
@@ -888,11 +1083,16 @@ private fun MainApp(
                             )
 
                             LinearProgressIndicator(
-                                progress = { period.progress },
+                                progress = {
+                                    period.progress
+                                },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(10.dp),
-                                color = if (period.atWork) mint else blue,
+                                color = if (period.atWork)
+                                    mint
+                                else
+                                    blue,
                                 trackColor = Color(0xFF354C65)
                             )
 
@@ -900,8 +1100,17 @@ private fun MainApp(
                                 "Прогресс",
                                 "${(period.progress * 100).toInt()}% из ${period.total} дней"
                             )
-                            Info("Заезд", period.start.display())
-                            Info("Выезд 🎉", period.end.display())
+
+                            Info(
+                                "Заезд",
+                                period.start.display()
+                            )
+
+                            Info(
+                                "Выезд 🎉",
+                                period.end.display()
+                            )
+
                             Info(
                                 "Следующий заезд",
                                 period.nextStart.display()
@@ -911,11 +1120,12 @@ private fun MainApp(
 
                     Panel("ЖИВОЙ СЧЁТЧИК") {
                         Text(
-                            rubles(earnings),
+                            money(earnings),
                             color = mint,
                             fontSize = 29.sp,
                             fontWeight = FontWeight.Bold
                         )
+
                         Text(
                             if (period?.atWork == true)
                                 "Расчёт обновляется каждую секунду"
@@ -923,8 +1133,9 @@ private fun MainApp(
                                 "На межвахте счётчик остановлен",
                             color = secondary
                         )
+
                         Text(
-                            "Ориентировочное начисление по графику, а не подтверждённая сумма к выплате. Время смен распределено условно в пределах суток.",
+                            "Предварительное начисление по заданному режиму. Часы внутри дня распределены условно. Это не подтверждённая сумма к выплате.",
                             color = secondary,
                             fontSize = 12.sp
                         )
@@ -935,15 +1146,22 @@ private fun MainApp(
                             nextPayDate(
                                 today,
                                 settings.advanceDay
-                            )?.let { "Аванс" to it },
+                            )?.let {
+                                "Аванс" to it
+                            },
+
                             nextPayDate(
                                 today,
                                 settings.salaryDay
-                            )?.let { "Зарплата" to it }
+                            )?.let {
+                                "Зарплата" to it
+                            }
                         )
+
                         val nearest = options.minByOrNull {
                             it.second
                         }
+
                         Text(
                             nearest?.let {
                                 "${it.first} · ${it.second.display()}"
@@ -951,8 +1169,9 @@ private fun MainApp(
                             color = Color.White,
                             fontSize = 19.sp
                         )
+
                         Text(
-                            "Прогноз суммы требует подтверждения расчётного периода и порядка удержаний.",
+                            "Точная сумма зависит от расчётного периода и фактических удержаний.",
                             color = secondary,
                             fontSize = 12.sp
                         )
@@ -964,8 +1183,7 @@ private fun MainApp(
                         ShiftCalendar(
                             today = today,
                             arrival = arrival!!,
-                            departure = departure!!,
-                            interval = months!!
+                            departure = departure!!
                         )
                     } else {
                         Panel("КАЛЕНДАРЬ") {
@@ -977,23 +1195,31 @@ private fun MainApp(
                     }
                 }
 
-                2 -> FinanceScreen(
-                    earnings = earnings,
-                    payments = payments,
-                    onPaymentsChange = ::persistPayments
-                )
+                2 -> {
+                    FinanceScreen(
+                        earnings = earnings,
+                        payments = payments,
+                        onPaymentsChange = ::persistPayments
+                    )
+                }
 
-                3 -> OrganizerScreen(organizerContext)
+                3 -> {
+                    OrganizerScreen(organizerContext)
+                }
 
-                4 -> SettingsScreen(
-                    s = settings,
-                    onChange = onSettingsChange,
-                    onLock = onLock
-                )
+                4 -> {
+                    SettingsScreen(
+                        settings = settings,
+                        onChange = onSettingsChange,
+                        onLock = onLock
+                    )
+                }
             }
         }
 
-        NavigationBar(containerColor = surface) {
+        NavigationBar(
+            containerColor = surface
+        ) {
             listOf(
                 "Главная",
                 "Календарь",
@@ -1003,10 +1229,18 @@ private fun MainApp(
             ).forEachIndexed { index, label ->
                 NavigationBarItem(
                     selected = tab == index,
-                    onClick = { tab = index },
+                    onClick = {
+                        tab = index
+                    },
                     icon = {
                         Text(
-                            listOf("⌂", "▦", "₽", "☑", "⚙")[index]
+                            listOf(
+                                "⌂",
+                                "▦",
+                                "₽",
+                                "☑",
+                                "⚙"
+                            )[index]
                         )
                     },
                     label = {
@@ -1027,15 +1261,23 @@ private fun nextPayDate(
     value: String
 ): LocalDate? {
     val day = value.toIntOrNull()
-        ?.takeIf { it in 1..31 } ?: return null
+        ?.takeIf { it in 1..31 }
+        ?: return null
 
-    fun inMonth(month: YearMonth) =
-        month.atDay(day.coerceAtMost(month.lengthOfMonth()))
+    fun inMonth(month: YearMonth): LocalDate =
+        month.atDay(
+            day.coerceAtMost(month.lengthOfMonth())
+        )
 
     val current = inMonth(YearMonth.from(today))
+
     return if (current.isBefore(today)) {
-        inMonth(YearMonth.from(today).plusMonths(1))
-    } else current
+        inMonth(
+            YearMonth.from(today).plusMonths(1)
+        )
+    } else {
+        current
+    }
 }
 
 @Composable
@@ -1045,17 +1287,26 @@ private fun FinanceScreen(
     onPaymentsChange: (List<Payment>) -> Unit
 ) {
     var date by remember {
-        mutableStateOf(LocalDate.now().toString())
+        mutableStateOf(
+            LocalDate.now().toString()
+        )
     }
-    var amount by remember { mutableStateOf("") }
-    var type by remember { mutableStateOf("Зарплата") }
+
+    var amount by remember {
+        mutableStateOf("")
+    }
+
+    var type by remember {
+        mutableStateOf("Зарплата")
+    }
 
     Panel("РАСЧЁТНЫЕ НАЧИСЛЕНИЯ") {
         Text(
-            rubles(earnings),
+            money(earnings),
             color = mint,
             fontSize = 25.sp
         )
+
         Text(
             "Предварительная оценка, не сумма к получению",
             color = secondary,
@@ -1064,10 +1315,18 @@ private fun FinanceScreen(
     }
 
     Panel("ДОБАВИТЬ ВЫПЛАТУ") {
-        DateField("Дата получения", date) {
+        DateField(
+            "Дата получения",
+            date
+        ) {
             date = it
         }
-        Field("Получено, ₽", amount, true) {
+
+        Field(
+            "Получено, ₽",
+            amount,
+            true
+        ) {
             amount = it
         }
 
@@ -1082,14 +1341,22 @@ private fun FinanceScreen(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clickable { type = option },
+                    .clickable {
+                        type = option
+                    },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 RadioButton(
                     selected = type == option,
-                    onClick = { type = option }
+                    onClick = {
+                        type = option
+                    }
                 )
-                Text(option, color = Color.White)
+
+                Text(
+                    option,
+                    color = Color.White
+                )
             }
         }
 
@@ -1097,15 +1364,17 @@ private fun FinanceScreen(
             onClick = {
                 onPaymentsChange(
                     payments + Payment(
-                        date,
-                        decimal(amount),
-                        type
+                        date = date,
+                        amount = decimal(amount),
+                        type = type
                     )
                 )
+
                 amount = ""
             },
-            enabled = decimal(amount) > 0 &&
-                parseDate(date) != null,
+            enabled =
+                decimal(amount) > 0.0 &&
+                    parseDate(date) != null,
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Сохранить выплату")
@@ -1115,30 +1384,38 @@ private fun FinanceScreen(
     Panel("ИСТОРИЯ ВЫПЛАТ") {
         Text(
             "Всего получено: ${
-                rubles(payments.sumOf { it.amount })
+                money(payments.sumOf { it.amount })
             }",
             color = mint
         )
 
         if (payments.isEmpty()) {
-            Text("Записей пока нет", color = secondary)
+            Text(
+                "Записей пока нет",
+                color = secondary
+            )
         }
 
-        payments.sortedByDescending { it.date }
-            .forEach { item ->
+        payments
+            .sortedByDescending { it.date }
+            .forEach { payment ->
                 HorizontalDivider()
+
                 Text(
-                    "${item.date} · ${item.type}",
+                    "${payment.date} · ${payment.type}",
                     color = secondary
                 )
+
                 Text(
-                    rubles(item.amount),
+                    money(payment.amount),
                     color = mint,
                     fontSize = 19.sp
                 )
+
                 TextButton(
                     onClick = {
-                        val index = payments.indexOf(item)
+                        val index = payments.indexOf(payment)
+
                         if (index >= 0) {
                             onPaymentsChange(
                                 payments.toMutableList().also {
@@ -1156,105 +1433,194 @@ private fun FinanceScreen(
 
 @Composable
 private fun SettingsScreen(
-    s: Settings,
+    settings: Settings,
     onChange: (Settings) -> Unit,
     onLock: () -> Unit
 ) {
     Panel("ЛИЧНЫЕ ДАННЫЕ") {
-        Field("Имя", s.name) {
-            onChange(s.copy(name = it))
+        Field(
+            "Имя",
+            settings.name
+        ) {
+            onChange(settings.copy(name = it))
         }
     }
 
     Panel("ГРАФИК ВАХТ") {
-        DateField("Дата заезда", s.arrival) {
-            onChange(s.copy(arrival = it))
+        DateField(
+            "Дата заезда",
+            settings.arrival
+        ) {
+            onChange(settings.copy(arrival = it))
         }
-        DateField("Дата выезда", s.departure) {
-            onChange(s.copy(departure = it))
+
+        DateField(
+            "Дата выезда",
+            settings.departure
+        ) {
+            onChange(settings.copy(departure = it))
         }
+
         Field(
-            "Интервал между заездами, месяцев",
-            s.interval,
+            "Рабочих дней подряд",
+            settings.workDays,
             true
         ) {
-            onChange(s.copy(interval = it))
+            onChange(settings.copy(workDays = it))
         }
-        Field("Рабочих дней подряд", s.workDays, true) {
-            onChange(s.copy(workDays = it))
+
+        Field(
+            "Выходных дней подряд",
+            settings.restDays,
+            true
+        ) {
+            onChange(settings.copy(restDays = it))
         }
-        Field("Выходных дней подряд", s.restDays, true) {
-            onChange(s.copy(restDays = it))
-        }
+
+        Text(
+            "Следующие заезды рассчитываются автоматически по первым датам.",
+            color = secondary,
+            fontSize = 12.sp
+        )
     }
 
     Panel("ОПЛАТА ТРУДА") {
-        Field("ЧТС, ₽/час", s.hourly, true) {
-            onChange(s.copy(hourly = it))
+        Field(
+            "ЧТС, ₽/час",
+            settings.hourly,
+            true
+        ) {
+            onChange(settings.copy(hourly = it))
         }
-        Field("Часов в смене", s.hours, true) {
-            onChange(s.copy(hours = it))
+
+        Field(
+            "Часов в смене",
+            settings.hours,
+            true
+        ) {
+            onChange(settings.copy(hours = it))
         }
-        Field("Районный коэффициент", s.coefficient, true) {
-            onChange(s.copy(coefficient = it))
+
+        Field(
+            "Районный коэффициент",
+            settings.coefficient,
+            true
+        ) {
+            onChange(settings.copy(coefficient = it))
         }
-        Field("Северная надбавка, %", s.north, true) {
-            onChange(s.copy(north = it))
+
+        Field(
+            "Северная надбавка, %",
+            settings.north,
+            true
+        ) {
+            onChange(settings.copy(north = it))
         }
-        Field("Производственная премия, %", s.premium, true) {
-            onChange(s.copy(premium = it))
+
+        Field(
+            "Производственная премия, %",
+            settings.premium,
+            true
+        ) {
+            onChange(settings.copy(premium = it))
         }
+
         Field(
             "Вахтовая надбавка, ₽/день",
-            s.shiftAllowance,
+            settings.shiftAllowance,
             true
         ) {
-            onChange(s.copy(shiftAllowance = it))
+            onChange(
+                settings.copy(shiftAllowance = it)
+            )
         }
-        Field("Оплачиваемых часов дороги", s.travelHours, true) {
-            onChange(s.copy(travelHours = it))
+
+        Field(
+            "Оплачиваемых часов дороги",
+            settings.travelHours,
+            true
+        ) {
+            onChange(settings.copy(travelHours = it))
         }
+
         Field(
             "Оплачиваемых часов межвахты",
-            s.intershiftHours,
+            settings.intershiftHours,
             true
         ) {
-            onChange(s.copy(intershiftHours = it))
+            onChange(
+                settings.copy(intershiftHours = it)
+            )
         }
+
         Field(
             "Ставка межвахты, ₽/час",
-            s.intershiftRate,
+            settings.intershiftRate,
             true
         ) {
-            onChange(s.copy(intershiftRate = it))
+            onChange(
+                settings.copy(intershiftRate = it)
+            )
         }
     }
 
     Panel("УДЕРЖАНИЯ") {
-        Field("НДФЛ, %", s.tax, true) {
-            onChange(s.copy(tax = it))
-        }
-        Field("Питание, ₽", s.meals, true) {
-            onChange(s.copy(meals = it))
-        }
-        Field("Исполнительные удержания, ₽", s.enforcement, true) {
-            onChange(s.copy(enforcement = it))
-        }
         Field(
-            "Прочие удержания, ₽",
-            s.otherDeductions,
+            "НДФЛ, %",
+            settings.tax,
             true
         ) {
-            onChange(s.copy(otherDeductions = it))
+            onChange(settings.copy(tax = it))
+        }
+
+        Field(
+            "Питание, ₽",
+            settings.meals,
+            true
+        ) {
+            onChange(settings.copy(meals = it))
+        }
+
+        Field(
+            "Исполнительные удержания, ₽",
+            settings.enforcement,
+            true
+        ) {
+            onChange(
+                settings.copy(enforcement = it)
+            )
+        }
+
+        Field(
+            "Прочие удержания, ₽",
+            settings.otherDeductions,
+            true
+        ) {
+            onChange(
+                settings.copy(otherDeductions = it)
+            )
         }
     }
 
     Panel("ДАТЫ ВЫПЛАТ") {
-        Field("Число аванса", s.advanceDay, true) {
-            onChange(s.copy(advanceDay = it))
+        Field(
+            "Число аванса",
+            settings.advanceDay,
+            true
+        ) {
+            onChange(
+                settings.copy(advanceDay = it)
+            )
         }
-        Field("Число зарплаты", s.salaryDay, true) {
-            onChange(s.copy(salaryDay = it))
+
+        Field(
+            "Число зарплаты",
+            settings.salaryDay,
+            true
+        ) {
+            onChange(
+                settings.copy(salaryDay = it)
+            )
         }
 
         listOf(
@@ -1266,28 +1632,53 @@ private fun SettingsScreen(
                 Modifier
                     .fillMaxWidth()
                     .clickable {
-                        onChange(s.copy(advanceMethod = method))
+                        onChange(
+                            settings.copy(
+                                advanceMethod = method
+                            )
+                        )
                     },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 RadioButton(
-                    selected = s.advanceMethod == method,
+                    selected =
+                        settings.advanceMethod == method,
                     onClick = {
-                        onChange(s.copy(advanceMethod = method))
+                        onChange(
+                            settings.copy(
+                                advanceMethod = method
+                            )
+                        )
                     }
                 )
-                Text(method, color = Color.White)
+
+                Text(
+                    method,
+                    color = Color.White
+                )
             }
         }
 
-        if (s.advanceMethod == "Фиксированная сумма") {
-            Field("Сумма аванса, ₽", s.fixedAdvance, true) {
-                onChange(s.copy(fixedAdvance = it))
+        if (
+            settings.advanceMethod ==
+            "Фиксированная сумма"
+        ) {
+            Field(
+                "Сумма аванса, ₽",
+                settings.fixedAdvance,
+                true
+            ) {
+                onChange(
+                    settings.copy(fixedAdvance = it)
+                )
             }
         }
 
-        Field("Особенности начислений", s.notes) {
-            onChange(s.copy(notes = it))
+        Field(
+            "Особенности начислений",
+            settings.notes
+        ) {
+            onChange(settings.copy(notes = it))
         }
     }
 
@@ -1305,12 +1696,12 @@ private fun SettingsScreen(
 private fun ShiftCalendar(
     today: LocalDate,
     arrival: LocalDate,
-    departure: LocalDate,
-    interval: Int
+    departure: LocalDate
 ) {
     var month by remember {
         mutableStateOf(YearMonth.from(today))
     }
+
     var selected by remember {
         mutableStateOf(today)
     }
@@ -1318,37 +1709,50 @@ private fun ShiftCalendar(
     Panel("КАЛЕНДАРЬ ВАХТ") {
         MonthHeader(
             month = month,
-            onPrevious = { month = month.minusMonths(1) },
-            onNext = { month = month.plusMonths(1) }
+            onPrevious = {
+                month = month.minusMonths(1)
+            },
+            onNext = {
+                month = month.plusMonths(1)
+            }
         )
 
         WeekHeader()
 
-        val offset = month.atDay(1).dayOfWeek.value - 1
+        val offset =
+            month.atDay(1).dayOfWeek.value - 1
+
         val count = month.lengthOfMonth()
         val rows = (offset + count + 6) / 7
 
         repeat(rows) { row ->
             Row(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                horizontalArrangement =
+                    Arrangement.spacedBy(3.dp)
             ) {
                 repeat(7) { col ->
-                    val day = row * 7 + col - offset + 1
+                    val day =
+                        row * 7 + col - offset + 1
 
                     if (day in 1..count) {
                         val date = month.atDay(day)
-                        val p = periodFor(
-                            date, arrival, departure, interval
+                        val period = periodFor(
+                            date,
+                            arrival,
+                            departure
                         )
 
-                        val isArrival = date == p.start
-                        val isDeparture = date == p.end
+                        val isArrival =
+                            date == period.start
+
+                        val isDeparture =
+                            date == period.end
 
                         val cellColor = when {
                             isDeparture -> gold
                             isArrival -> Color(0xFF278E7A)
-                            p.atWork -> Color(0xFF204F4A)
+                            period.atWork -> Color(0xFF204F4A)
                             else -> Color(0xFF233F65)
                         }
 
@@ -1361,16 +1765,21 @@ private fun ShiftCalendar(
                                     RoundedCornerShape(9.dp)
                                 )
                                 .then(
-                                    if (date == selected)
+                                    if (date == selected) {
                                         Modifier.border(
                                             2.dp,
                                             Color.White,
                                             RoundedCornerShape(9.dp)
                                         )
-                                    else Modifier
+                                    } else {
+                                        Modifier
+                                    }
                                 )
-                                .clickable { selected = date },
-                            contentAlignment = Alignment.Center
+                                .clickable {
+                                    selected = date
+                                },
+                            contentAlignment =
+                                Alignment.Center
                         ) {
                             Column(
                                 horizontalAlignment =
@@ -1378,10 +1787,14 @@ private fun ShiftCalendar(
                             ) {
                                 Text(
                                     "$day",
-                                    color = if (isDeparture)
-                                        navy else Color.White,
+                                    color =
+                                        if (isDeparture)
+                                            navy
+                                        else
+                                            Color.White,
                                     fontWeight = FontWeight.Bold
                                 )
+
                                 Text(
                                     when {
                                         isDeparture -> "🎉"
@@ -1397,7 +1810,9 @@ private fun ShiftCalendar(
                         }
                     } else {
                         Spacer(
-                            Modifier.weight(1f).height(49.dp)
+                            Modifier
+                                .weight(1f)
+                                .height(49.dp)
                         )
                     }
                 }
@@ -1410,8 +1825,10 @@ private fun ShiftCalendar(
 
         HorizontalDivider()
 
-        val p = periodFor(
-            selected, arrival, departure, interval
+        val selectedPeriod = periodFor(
+            selected,
+            arrival,
+            departure
         )
 
         Text(
@@ -1423,14 +1840,23 @@ private fun ShiftCalendar(
 
         Text(
             when {
-                selected == p.end -> "🎉 День выезда домой!"
-                selected == p.start -> "🚀 День заезда!"
-                p.atWork ->
-                    "На вахте. До выезда: ${p.remaining} дн."
+                selected == selectedPeriod.end ->
+                    "🎉 День выезда домой!"
+
+                selected == selectedPeriod.start ->
+                    "🚀 День заезда!"
+
+                selectedPeriod.atWork ->
+                    "На вахте. До выезда: ${selectedPeriod.remaining} дн."
+
                 else ->
-                    "На межвахте. До заезда: ${p.remaining} дн."
+                    "На межвахте. До заезда: ${selectedPeriod.remaining} дн."
             },
-            color = if (selected == p.end) gold else mint
+            color =
+                if (selected == selectedPeriod.end)
+                    gold
+                else
+                    mint
         )
 
         OutlinedButton(
@@ -1453,22 +1879,39 @@ private fun MonthHeader(
 ) {
     Row(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        horizontalArrangement =
+            Arrangement.SpaceBetween,
+        verticalAlignment =
+            Alignment.CenterVertically
     ) {
         IconButton(onClick = onPrevious) {
-            Text("‹", fontSize = 30.sp, color = mint)
+            Text(
+                "‹",
+                fontSize = 30.sp,
+                color = mint
+            )
         }
+
         Text(
             month.format(
-                DateTimeFormatter.ofPattern("LLLL yyyy", locale)
-            ).replaceFirstChar { it.uppercase() },
+                DateTimeFormatter.ofPattern(
+                    "LLLL yyyy",
+                    locale
+                )
+            ).replaceFirstChar {
+                it.uppercase()
+            },
             color = Color.White,
             fontSize = 17.sp,
             fontWeight = FontWeight.Bold
         )
+
         IconButton(onClick = onNext) {
-            Text("›", fontSize = 30.sp, color = mint)
+            Text(
+                "›",
+                fontSize = 30.sp,
+                color = mint
+            )
         }
     }
 }
@@ -1477,10 +1920,11 @@ private fun MonthHeader(
 private fun WeekHeader() {
     Row(Modifier.fillMaxWidth()) {
         listOf(
-            "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"
-        ).forEach {
+            "Пн", "Вт", "Ср", "Чт",
+            "Пт", "Сб", "Вс"
+        ).forEach { day ->
             Text(
-                it,
+                day,
                 modifier = Modifier.weight(1f),
                 textAlign = TextAlign.Center,
                 fontSize = 11.sp,
@@ -1496,34 +1940,48 @@ private fun DateField(
     value: String,
     onChange: (String) -> Unit
 ) {
-    var open by remember { mutableStateOf(false) }
+    var open by remember {
+        mutableStateOf(false)
+    }
+
     val selected = parseDate(value)
 
     OutlinedButton(
-        onClick = { open = true },
+        onClick = {
+            open = true
+        },
         modifier = Modifier.fillMaxWidth()
     ) {
         Text(
-            "$label: ${selected?.display() ?: "Выбрать дату"}"
+            "$label: ${
+                selected?.display() ?: "Выбрать дату"
+            }"
         )
     }
 
     if (open) {
         var month by remember(open) {
             mutableStateOf(
-                YearMonth.from(selected ?: LocalDate.now())
+                YearMonth.from(
+                    selected ?: LocalDate.now()
+                )
             )
         }
 
         AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(label) },
+            onDismissRequest = {
+                open = false
+            },
+            title = {
+                Text(label)
+            },
             text = {
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                    verticalArrangement =
+                        Arrangement.spacedBy(5.dp)
                 ) {
                     MonthHeader(
-                        month,
+                        month = month,
                         onPrevious = {
                             month = month.minusMonths(1)
                         },
@@ -1536,6 +1994,7 @@ private fun DateField(
 
                     val offset =
                         month.atDay(1).dayOfWeek.value - 1
+
                     val count = month.lengthOfMonth()
                     val rows = (offset + count + 6) / 7
 
@@ -1550,17 +2009,21 @@ private fun DateField(
                                         .weight(1f)
                                         .height(38.dp)
                                         .then(
-                                            if (day in 1..count)
+                                            if (day in 1..count) {
                                                 Modifier.clickable {
                                                     onChange(
-                                                        month.atDay(day)
+                                                        month
+                                                            .atDay(day)
                                                             .toString()
                                                     )
                                                     open = false
                                                 }
-                                            else Modifier
+                                            } else {
+                                                Modifier
+                                            }
                                         ),
-                                    contentAlignment = Alignment.Center
+                                    contentAlignment =
+                                        Alignment.Center
                                 ) {
                                     if (day in 1..count) {
                                         Text(
@@ -1569,8 +2032,11 @@ private fun DateField(
                                                 if (
                                                     month.atDay(day) ==
                                                     selected
-                                                ) mint
-                                                else Color.White
+                                                ) {
+                                                    mint
+                                                } else {
+                                                    Color.White
+                                                }
                                         )
                                     }
                                 }
@@ -1580,7 +2046,11 @@ private fun DateField(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { open = false }) {
+                TextButton(
+                    onClick = {
+                        open = false
+                    }
+                ) {
                     Text("Закрыть")
                 }
             },
@@ -1600,6 +2070,7 @@ private fun StepTitle(
         fontSize = 26.sp,
         fontWeight = FontWeight.Bold
     )
+
     Text(
         description,
         color = secondary,
@@ -1621,7 +2092,8 @@ private fun Panel(
     ) {
         Column(
             Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement =
+                Arrangement.spacedBy(10.dp)
         ) {
             Text(
                 title,
@@ -1629,6 +2101,7 @@ private fun Panel(
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
+
             content()
         }
     }
@@ -1641,13 +2114,15 @@ private fun Info(
 ) {
     Row(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
+        horizontalArrangement =
+            Arrangement.SpaceBetween
     ) {
         Text(
             label,
             color = secondary,
             fontSize = 13.sp
         )
+
         Text(
             value,
             color = Color.White,
@@ -1666,12 +2141,16 @@ private fun Field(
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
-        label = { Text(label) },
+        label = {
+            Text(label)
+        },
         singleLine = true,
         keyboardOptions = KeyboardOptions(
-            keyboardType = if (numeric)
-                KeyboardType.Decimal
-            else KeyboardType.Text
+            keyboardType =
+                if (numeric)
+                    KeyboardType.Decimal
+                else
+                    KeyboardType.Text
         ),
         modifier = Modifier.fillMaxWidth()
     )
