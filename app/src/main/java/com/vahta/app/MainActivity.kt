@@ -40,6 +40,7 @@ private val muted = Color(0xFFB4C6D9)
 private val blue = Color(0xFF4389D8)
 private val gold = Color(0xFFFFB45B)
 private val ru = Locale.forLanguageTag("ru-RU")
+
 private val rotations = listOf(
     "15×15", "30×30", "45×45", "60×60", "60×30"
 )
@@ -231,62 +232,41 @@ private data class Period(
     val progress: Float
 )
 
-/*
- * Даты последующих вахт привязаны к числам
- * первого заезда и выезда.
- *
- * Пример:
- * 25.10.2026 — 10.12.2026
- * 25.01.2027 — 10.03.2027
- * 25.04.2027 — 10.06.2027
- *
- * Если в месяце нет нужного числа,
- * ограничение действует только на этот месяц.
- */
 private fun periodFor(
     day: LocalDate,
     first: LocalDate,
     last: LocalDate,
     rotation: String
 ): Period {
-    val cycleMonths = rotationMonths(rotation).toLong()
+    val step = rotationMonths(rotation).toLong()
 
-    fun arrivalAt(index: Long): LocalDate =
-        anchoredDate(first, index * cycleMonths)
-
-    fun departureAt(index: Long): LocalDate =
-        anchoredDate(last, index * cycleMonths)
-
-    var index = ChronoUnit.MONTHS.between(
+    val monthDelta = ChronoUnit.MONTHS.between(
         YearMonth.from(first),
         YearMonth.from(day)
-    ) / cycleMonths
+    )
 
-    while (arrivalAt(index).isAfter(day)) {
-        index--
+    var i = Math.floorDiv(monthDelta, step)
+
+    fun start(n: Long) =
+        anchoredDate(first, n * step)
+
+    while (start(i).isAfter(day)) i--
+    while (!start(i + 1).isAfter(day)) i++
+
+    val a = start(i)
+    val next = start(i + 1)
+    val rawEnd = anchoredDate(last, i * step)
+
+    val end = when {
+        rawEnd.isBefore(a) -> a
+        !rawEnd.isBefore(next) -> next.minusDays(1)
+        else -> rawEnd
     }
-
-    while (!arrivalAt(index + 1).isAfter(day)) {
-        index++
-    }
-
-    val start = arrivalAt(index)
-    val end = departureAt(index)
-    val next = arrivalAt(index + 1)
 
     val working = !day.isAfter(end)
 
-    val begin = if (working) {
-        start
-    } else {
-        end.plusDays(1)
-    }
-
-    val finish = if (working) {
-        end
-    } else {
-        next.minusDays(1)
-    }
+    val begin = if (working) a else end.plusDays(1)
+    val finish = if (working) end else next.minusDays(1)
 
     val total = (
         ChronoUnit.DAYS.between(begin, finish) + 1
@@ -294,17 +274,12 @@ private fun periodFor(
 
     val elapsed = (
         ChronoUnit.DAYS.between(begin, day) + 1
-    ).coerceIn(0L, total)
+    ).coerceIn(0, total)
 
     return Period(
-        start = start,
-        end = end,
-        next = next,
-        working = working,
-        elapsed = elapsed,
-        total = total,
-        remaining = total - elapsed,
-        progress = elapsed.toFloat() / total
+        a, end, next, working,
+        elapsed, total, total - elapsed,
+        elapsed.toFloat() / total
     )
 }
 
@@ -312,186 +287,372 @@ private data class Payment(
     val date: String,
     val amount: Double,
     val type: String,
-    val expected: Double? = null
+    val forecast: Double = -1.0
 )
 
 private fun loadPayments(raw: String): List<Payment> =
     runCatching {
-        val array = JSONArray(raw)
-
-        (0 until array.length()).map { index ->
-            val item = array.getJSONObject(index)
-
+        val a = JSONArray(raw)
+        (0 until a.length()).map {
+            val o = a.getJSONObject(it)
             Payment(
-                date = item.optString("date"),
-                amount = item.optDouble("amount"),
-                type = item.optString("type"),
-                expected = if (
-                    item.has("expected") &&
-                    !item.isNull("expected")
-                ) {
-                    item.optDouble("expected")
-                } else {
-                    null
-                }
+                o.optString("date"),
+                o.optDouble("amount"),
+                o.optString("type"),
+                o.optDouble("forecast", -1.0)
             )
         }
     }.getOrDefault(emptyList())
 
 private fun encodePayments(
     items: List<Payment>
-): String = JSONArray().apply {
-    items.forEach { item ->
+) = JSONArray().apply {
+    items.forEach {
         put(
             JSONObject()
-                .put("date", item.date)
-                .put("amount", item.amount)
-                .put("type", item.type)
-                .put("expected", item.expected ?: JSONObject.NULL)
+                .put("date", it.date)
+                .put("amount", it.amount)
+                .put("type", it.type)
+                .put("forecast", it.forecast)
         )
     }
 }.toString()
 
-private data class PersonalEvent(
-    val id: String,
+private data class CalendarEvent(
     val date: String,
-    val title: String,
-    val description: String = "",
-    val reminder: Boolean = false
+    val title: String
 )
 
-private fun loadEvents(raw: String): List<PersonalEvent> =
+private fun loadEvents(raw: String): List<CalendarEvent> =
     runCatching {
-        val array = JSONArray(raw)
-
-        (0 until array.length()).map { index ->
-            val item = array.getJSONObject(index)
-
-            PersonalEvent(
-                id = item.optString("id"),
-                date = item.optString("date"),
-                title = item.optString("title"),
-                description = item.optString("description"),
-                reminder = item.optBoolean("reminder")
+        val a = JSONArray(raw)
+        (0 until a.length()).map {
+            val o = a.getJSONObject(it)
+            CalendarEvent(
+                o.optString("date"),
+                o.optString("title")
             )
         }
     }.getOrDefault(emptyList())
 
 private fun encodeEvents(
-    items: List<PersonalEvent>
-): String = JSONArray().apply {
-    items.forEach { item ->
+    items: List<CalendarEvent>
+) = JSONArray().apply {
+    items.forEach {
         put(
             JSONObject()
-                .put("id", item.id)
-                .put("date", item.date)
-                .put("title", item.title)
-                .put("description", item.description)
-                .put("reminder", item.reminder)
+                .put("date", it.date)
+                .put("title", it.title)
         )
     }
 }.toString()
 
-/*
- * Расчёт ориентировочный.
- * Отдельно храним прогноз и реальную выплату.
- * Фактическая сумма не изменяет формулы.
- */
-private fun calculateGross(
-    config: Config,
-    workedDays: Double
-): Double {
-    val hourly = num(config.hourly)
-    val hours = num(config.hours)
+// Общероссийские нерабочие дни и переносы 2026 года.
+// Для других годов пока используются только
+// основные федеральные праздники и выходные.
 
-    val base = workedDays * hours * hourly
+private val nonWorking2026 = setOf(
+    "2026-01-01",
+    "2026-01-02",
+    "2026-01-05",
+    "2026-01-06",
+    "2026-01-07",
+    "2026-01-08",
+    "2026-01-09",
+    "2026-02-23",
+    "2026-03-09",
+    "2026-05-01",
+    "2026-05-11",
+    "2026-06-12",
+    "2026-11-04",
+    "2026-12-31"
+)
 
-    val coefficient = num(config.coefficient)
-        .takeIf { it > 0.0 } ?: 1.0
+private fun isNonWorkingDay(
+    date: LocalDate
+): Boolean {
+    if (
+        date.dayOfWeek == DayOfWeek.SATURDAY ||
+        date.dayOfWeek == DayOfWeek.SUNDAY
+    ) return true
 
-    val north = num(config.north) / 100.0
-    val premium = num(config.premium) / 100.0
+    if (date.year == 2026) {
+        return date.toString() in nonWorking2026
+    }
 
-    val salary = base * (
-        coefficient + north + premium
-    )
-
-    val allowance = workedDays * num(config.allowance)
-
-    return salary + allowance
-}
-
-private fun calculateNet(
-    config: Config,
-    gross: Double
-): Double {
-    val tax = gross * num(config.tax) / 100.0
-
-    val deductions =
-        num(config.meals) +
-        num(config.enforcement) +
-        num(config.otherDeductions)
-
-    return (gross - tax - deductions)
-        .coerceAtLeast(0.0)
-}
-
-private fun countWorkedDays(
-    start: LocalDate,
-    end: LocalDate,
-    config: Config
-): Int {
-    if (end.isBefore(start)) return 0
-
-    val working = (
-        config.workDays.toIntOrNull() ?: 1
-    ).coerceIn(1, 366)
-
-    val resting = (
-        config.restDays.toIntOrNull() ?: 0
-    ).coerceIn(0, 366)
-
-    val cycle = working + resting
-
-    val totalDays = (
-        ChronoUnit.DAYS.between(start, end) + 1
-    ).toInt()
-
-    return (0 until totalDays).count { day ->
-        day % cycle < working
+    return when (date.monthValue) {
+        1 -> date.dayOfMonth in 1..8
+        2 -> date.dayOfMonth == 23
+        3 -> date.dayOfMonth == 8
+        5 -> date.dayOfMonth == 1 ||
+             date.dayOfMonth == 9
+        6 -> date.dayOfMonth == 12
+        11 -> date.dayOfMonth == 4
+        else -> false
     }
 }
 
-private fun expectedForPeriod(
-    config: Config,
-    start: LocalDate,
-    end: LocalDate
-): Double {
-    val worked = countWorkedDays(start, end, config)
-    val gross = calculateGross(config, worked.toDouble())
-    return calculateNet(config, gross)
+private fun payDate(
+    month: YearMonth,
+    dayText: String
+): LocalDate? {
+    val day = dayText.toIntOrNull()
+        ?.takeIf { it in 1..31 }
+        ?: return null
+
+    var date = month.atDay(
+        day.coerceAtMost(month.lengthOfMonth())
+    )
+
+    while (isNonWorkingDay(date)) {
+        date = date.minusDays(1)
+    }
+
+    return date
+}
+
+// Учитываем перенос выплаты с начала
+// следующего месяца на конец текущего.
+
+private fun isPayDate(
+    date: LocalDate,
+    dayText: String
+): Boolean {
+    val month = YearMonth.from(date)
+
+    return payDate(month, dayText) == date ||
+        payDate(
+            month.plusMonths(1),
+            dayText
+        ) == date
 }
 
 private fun nextPayDate(
     today: LocalDate,
     text: String
 ): LocalDate? {
-    val day = text.toIntOrNull()
-        ?.takeIf { it in 1..31 } ?: return null
+    val month = YearMonth.from(today)
 
-    fun date(month: YearMonth): LocalDate =
-        month.atDay(
-            day.coerceAtMost(month.lengthOfMonth())
+    for (offset in 0L..3L) {
+        val date = payDate(
+            month.plusMonths(offset),
+            text
+        ) ?: return null
+
+        if (!date.isBefore(today)) {
+            return date
+        }
+    }
+
+    return null
+}
+
+private fun grossForRange(
+    s: Config,
+    start: LocalDate,
+    end: LocalDate
+): Double {
+    if (end.isBefore(start)) return 0.0
+
+    val first = parseDate(s.arrival) ?: return 0.0
+    val last = parseDate(s.departure) ?: return 0.0
+
+    if (last.isBefore(first)) return 0.0
+    if (s.rotation !in rotations) return 0.0
+
+    val hourly = num(s.hourly)
+    val hours = num(s.hours)
+
+    if (hourly <= 0.0 || hours <= 0.0) return 0.0
+
+    val workDays = (
+        s.workDays.toIntOrNull() ?: 1
+    ).coerceIn(1, 366)
+
+    val restDays = (
+        s.restDays.toIntOrNull() ?: 0
+    ).coerceIn(0, 366)
+
+    val cycle = workDays + restDays
+
+    val coefficient = num(s.coefficient)
+        .takeIf { it > 0.0 } ?: 1.0
+
+    val north = num(s.north) / 100.0
+    val premium = num(s.premium) / 100.0
+    val allowance = num(s.allowance)
+
+    var total = 0.0
+    var day = start
+
+    while (!day.isAfter(end)) {
+        val period = periodFor(
+            day, first, last, s.rotation
         )
 
-    val currentMonth = YearMonth.from(today)
-    val current = date(currentMonth)
+        if (period.working) {
+            val offset = ChronoUnit.DAYS.between(
+                period.start, day
+            )
 
-    return if (current.isBefore(today)) {
-        date(currentMonth.plusMonths(1))
-    } else {
-        current
+            val cycleDay = Math.floorMod(
+                offset,
+                cycle.toLong()
+            )
+
+            if (cycleDay < workDays) {
+                val base = hourly * hours
+
+                total += base * (
+                    coefficient + north + premium
+                )
+            }
+
+            total += allowance
+        }
+
+        day = day.plusDays(1)
     }
+
+    return total
+}
+
+private fun netFromGross(
+    s: Config,
+    gross: Double
+): Double {
+    val tax = gross * num(s.tax) / 100.0
+
+    val deductions =
+        num(s.meals) +
+        num(s.enforcement) +
+        num(s.otherDeductions)
+
+    return (
+        gross - tax - deductions
+    ).coerceAtLeast(0.0)
+}
+
+/*
+ * Предварительная оценка выплаты.
+ *
+ * Для зарплаты берётся предыдущий
+ * календарный месяц.
+ *
+ * Для фиксированного аванса
+ * используется указанная сумма.
+ *
+ * Для остальных способов аванса
+ * прогноз не создаётся автоматически,
+ * поскольку расчётный период
+ * работодателя может отличаться.
+ */
+private fun estimateForPayday(
+    s: Config,
+    date: LocalDate,
+    type: String
+): Double? {
+    if (type == "Аванс") {
+        return if (
+            s.advanceMethod == "Фиксированная сумма" &&
+            num(s.fixedAdvance) > 0.0
+        ) {
+            num(s.fixedAdvance)
+        } else {
+            null
+        }
+    }
+
+    if (type != "Зарплата") return null
+
+    val previousMonth = YearMonth.from(date)
+        .minusMonths(1)
+
+    val gross = grossForRange(
+        s,
+        previousMonth.atDay(1),
+        previousMonth.atEndOfMonth()
+    )
+
+    return netFromGross(s, gross)
+}
+
+/*
+ * Сумма начислений с начала текущей
+ * вахты до текущего момента.
+ *
+ * Счётчик обновляется каждую секунду.
+ * Это оценка, не бухгалтерский расчёт.
+ */
+private fun liveEarnings(
+    s: Config,
+    now: LocalDateTime
+): Double {
+    val first = parseDate(s.arrival) ?: return 0.0
+    val last = parseDate(s.departure) ?: return 0.0
+
+    if (last.isBefore(first)) return 0.0
+    if (s.rotation !in rotations) return 0.0
+
+    val today = now.toLocalDate()
+
+    val period = periodFor(
+        today, first, last, s.rotation
+    )
+
+    val completedEnd = if (period.working) {
+        today.minusDays(1)
+    } else {
+        period.end
+    }
+
+    var gross = grossForRange(
+        s,
+        period.start,
+        completedEnd
+    )
+
+    if (period.working) {
+        val workDays = (
+            s.workDays.toIntOrNull() ?: 1
+        ).coerceIn(1, 366)
+
+        val restDays = (
+            s.restDays.toIntOrNull() ?: 0
+        ).coerceIn(0, 366)
+
+        val cycle = workDays + restDays
+
+        val offset = ChronoUnit.DAYS.between(
+            period.start, today
+        )
+
+        val workingToday = Math.floorMod(
+            offset,
+            cycle.toLong()
+        ) < workDays
+
+        val fraction =
+            now.toLocalTime().toSecondOfDay() / 86400.0
+
+        val coefficient = num(s.coefficient)
+            .takeIf { it > 0.0 } ?: 1.0
+
+        val north = num(s.north) / 100.0
+        val premium = num(s.premium) / 100.0
+
+        if (workingToday) {
+            val base = num(s.hourly) * num(s.hours)
+
+            gross += base * (
+                coefficient + north + premium
+            ) * fraction
+        }
+
+        gross += num(s.allowance) * fraction
+    }
+
+    return gross
 }
 
 class MainActivity : FragmentActivity() {
@@ -521,7 +682,9 @@ class MainActivity : FragmentActivity() {
             }
 
             var config by remember {
-                mutableStateOf(readConfig(prefs))
+                mutableStateOf(
+                    readConfig(prefs)
+                )
             }
 
             val owner = LocalLifecycleOwner.current
@@ -555,7 +718,9 @@ class MainActivity : FragmentActivity() {
                 owner.lifecycle.addObserver(observer)
 
                 onDispose {
-                    owner.lifecycle.removeObserver(observer)
+                    owner.lifecycle.removeObserver(
+                        observer
+                    )
                 }
             }
 
@@ -570,21 +735,28 @@ class MainActivity : FragmentActivity() {
                     }
 
                     !setupDone -> {
-                        Wizard(prefs) { result ->
-                            config = result
+                        Wizard(
+                            prefs = prefs,
+                            onFinish = { result ->
+                                config = result
 
-                            saveConfig(prefs, result)
-
-                            prefs.edit()
-                                .putBoolean(
-                                    "setup_complete_v2",
-                                    true
+                                saveConfig(
+                                    prefs,
+                                    result
                                 )
-                                .apply()
 
-                            clearDraft(prefs)
-                            setupDone = true
-                        }
+                                prefs.edit()
+                                    .putBoolean(
+                                        "setup_complete_v2",
+                                        true
+                                    )
+                                    .apply()
+
+                                clearDraft(prefs)
+
+                                setupDone = true
+                            }
+                        )
                     }
 
                     else -> {
@@ -592,13 +764,18 @@ class MainActivity : FragmentActivity() {
                             s = config,
                             onChange = { updated ->
                                 config = updated
-                                saveConfig(prefs, updated)
+
+                                saveConfig(
+                                    prefs,
+                                    updated
+                                )
                             },
                             prefs = prefs,
                             onLock = {
                                 unlocked = false
                             },
-                            organizerContext = this@MainActivity
+                            organizerContext =
+                                this@MainActivity
                         )
                     }
                 }
@@ -1447,44 +1624,7 @@ private fun Dashboard(
         periodFor(today, first!!, last!!, s.rotation)
     } else null
 
-    val earnings = if (period == null) {
-        0.0
-    } else {
-        val end = if (period.working) today else period.end
-        val worked = countWorkedDays(
-            period.start,
-            end,
-            s
-        )
-
-        val work = (s.workDays.toIntOrNull() ?: 1)
-            .coerceIn(1, 366)
-
-        val rest = (s.restDays.toIntOrNull() ?: 0)
-            .coerceIn(0, 366)
-
-        val offset = ChronoUnit.DAYS.between(
-            period.start, today
-        )
-
-        val fraction = if (
-            period.working &&
-            Math.floorMod(offset, (work + rest).toLong()) < work
-        ) {
-            now.toLocalTime().toSecondOfDay() / 86400.0
-        } else {
-            0.0
-        }
-
-        val countedDays = if (period.working) {
-            (worked - if (fraction > 0) 1 else 0)
-                .coerceAtLeast(0).toDouble() + fraction
-        } else {
-            worked.toDouble()
-        }
-
-        calculateGross(s, countedDays)
-    }
+    val earnings = liveEarnings(s, now)
 
     var payments by remember {
         mutableStateOf(
@@ -1504,15 +1644,15 @@ private fun Dashboard(
     var events by remember {
         mutableStateOf(
             loadEvents(
-                prefs.getString("personal_events", "[]") ?: "[]"
+                prefs.getString("calendar_events", "[]") ?: "[]"
             )
         )
     }
 
-    fun saveEvents(items: List<PersonalEvent>) {
+    fun saveEvents(items: List<CalendarEvent>) {
         events = items
         prefs.edit()
-            .putString("personal_events", encodeEvents(items))
+            .putString("calendar_events", encodeEvents(items))
             .apply()
     }
 
@@ -1576,7 +1716,8 @@ private fun Dashboard(
 
                             LinearProgressIndicator(
                                 progress = { period.progress },
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
                                     .height(10.dp),
                                 color = mint
                             )
@@ -1612,10 +1753,9 @@ private fun Dashboard(
                         )
 
                         Text(
-                            "Приблизительное начисление до " +
-                                "удержаний. Часы смены условно " +
-                                "распределены по суткам. " +
-                                "Не является расчётным листком.",
+                            "Приблизительное начисление " +
+                                "до удержаний. Не является " +
+                                "расчётным листком.",
                             color = muted,
                             fontSize = 12.sp
                         )
@@ -1638,10 +1778,34 @@ private fun Dashboard(
                             salary?.pretty() ?: "Не задана"
                         )
 
+                        if (advance != null) {
+                            estimateForPayday(
+                                s, advance, "Аванс"
+                            )?.let {
+                                Info(
+                                    "Прогноз аванса",
+                                    rub(it)
+                                )
+                            }
+                        }
+
+                        if (salary != null) {
+                            estimateForPayday(
+                                s, salary, "Зарплата"
+                            )?.let {
+                                Info(
+                                    "Прогноз зарплаты",
+                                    rub(it)
+                                )
+                            }
+                        }
+
                         Text(
-                            "Суммы фактических выплат " +
-                                "отображаются в календаре " +
-                                "после их сохранения.",
+                            "Если установленная дата " +
+                                "выпадает на выходной или " +
+                                "праздник, выплата " +
+                                "переносится на предыдущий " +
+                                "рабочий день.",
                             color = muted,
                             fontSize = 12.sp
                         )
@@ -1686,6 +1850,8 @@ private fun Dashboard(
                 }
 
                 2 -> Finance(
+                    s = s,
+                    today = today,
                     earnings = earnings,
                     payments = payments,
                     onChange = ::savePayments
@@ -1741,8 +1907,8 @@ private fun ShiftCalendar(
     config: Config,
     onConfigChange: (Config) -> Unit,
     payments: List<Payment>,
-    events: List<PersonalEvent>,
-    onEventsChange: (List<PersonalEvent>) -> Unit
+    events: List<CalendarEvent>,
+    onEventsChange: (List<CalendarEvent>) -> Unit
 ) {
     var month by remember {
         mutableStateOf(YearMonth.from(today))
@@ -1752,25 +1918,13 @@ private fun ShiftCalendar(
         mutableStateOf(today)
     }
 
-    var eventDialog by remember {
-        mutableStateOf(false)
+    var eventTitle by remember {
+        mutableStateOf("")
     }
 
-    val advanceDay = config.advanceDay.toIntOrNull()
-    val salaryDay = config.salaryDay.toIntOrNull()
-
-    fun isPayday(
-        date: LocalDate,
-        configuredDay: Int?
-    ): Boolean {
-        if (configuredDay == null ||
-            configuredDay !in 1..31) return false
-
-        return date.dayOfMonth ==
-            configuredDay.coerceAtMost(
-                date.lengthOfMonth()
-            )
-    }
+    val selectedPeriod = periodFor(
+        selected, first, last, rotation
+    )
 
     Panel("КАЛЕНДАРЬ ВАХТ И ВЫПЛАТ") {
         MonthHeader(
@@ -1804,11 +1958,12 @@ private fun ShiftCalendar(
                         val arrival = date == period.start
                         val departure = date == period.end
 
-                        val advance = isPayday(
-                            date, advanceDay
+                        val advance = isPayDate(
+                            date, config.advanceDay
                         )
-                        val salary = isPayday(
-                            date, salaryDay
+
+                        val salary = isPayDate(
+                            date, config.salaryDay
                         )
 
                         val hasEvent = events.any {
@@ -1879,7 +2034,8 @@ private fun ShiftCalendar(
                         }
                     } else {
                         Spacer(
-                            Modifier.weight(1f)
+                            Modifier
+                                .weight(1f)
                                 .height(63.dp)
                         )
                     }
@@ -1895,10 +2051,6 @@ private fun ShiftCalendar(
         )
 
         HorizontalDivider()
-
-        val selectedPeriod = periodFor(
-            selected, first, last, rotation
-        )
 
         Text(
             selected.pretty(),
@@ -1926,12 +2078,12 @@ private fun ShiftCalendar(
             color = mint
         )
 
-        val selectedAdvance = isPayday(
-            selected, advanceDay
+        val selectedAdvance = isPayDate(
+            selected, config.advanceDay
         )
 
-        val selectedSalary = isPayday(
-            selected, salaryDay
+        val selectedSalary = isPayDate(
+            selected, config.salaryDay
         )
 
         if (selectedAdvance) {
@@ -1941,23 +2093,10 @@ private fun ShiftCalendar(
                 fontWeight = FontWeight.Bold
             )
 
-            if (
-                config.advanceMethod ==
-                "Фиксированная сумма" &&
-                num(config.fixedAdvance) > 0
-            ) {
-                Info(
-                    "Плановая сумма",
-                    rub(num(config.fixedAdvance))
-                )
-            } else {
-                Text(
-                    "Плановая сумма не рассчитана: " +
-                        "нужен расчётный период и " +
-                        "порядок начисления аванса.",
-                    color = muted,
-                    fontSize = 12.sp
-                )
+            estimateForPayday(
+                config, selected, "Аванс"
+            )?.let {
+                Info("Прогноз", rub(it))
             }
         }
 
@@ -1968,12 +2107,11 @@ private fun ShiftCalendar(
                 fontWeight = FontWeight.Bold
             )
 
-            Text(
-                "Прогноз выплаты будет доступен " +
-                    "после настройки расчётного периода.",
-                color = muted,
-                fontSize = 12.sp
-            )
+            estimateForPayday(
+                config, selected, "Зарплата"
+            )?.let {
+                Info("Предварительный прогноз", rub(it))
+            }
         }
 
         val dayPayments = payments.filter {
@@ -1995,19 +2133,18 @@ private fun ShiftCalendar(
                     rub(payment.amount)
                 )
 
-                payment.expected?.let { expected ->
+                if (payment.forecast >= 0.0) {
                     Info(
-                        "Прогноз",
-                        rub(expected)
+                        "Прогноз при сохранении",
+                        rub(payment.forecast)
                     )
 
-                    val difference =
-                        payment.amount - expected
-
                     Info(
-                        "Расхождение",
-                        "${if (difference > 0) "+" else ""}" +
-                            rub(difference)
+                        "Разница",
+                        rub(
+                            payment.amount -
+                                payment.forecast
+                        )
                     )
                 }
             }
@@ -2056,9 +2193,10 @@ private fun ShiftCalendar(
         }
 
         Text(
-            "Выбранное число повторяется ежемесячно. " +
-                "Для 29–31 числа в коротком месяце " +
-                "временно используется последний день.",
+            "Число выплаты сохраняется в настройках. " +
+                "Если оно приходится на нерабочий день, " +
+                "отметка переносится на предыдущий " +
+                "рабочий день.",
             color = muted,
             fontSize = 11.sp
         )
@@ -2071,54 +2209,42 @@ private fun ShiftCalendar(
             fontWeight = FontWeight.Bold
         )
 
-        val selectedEvents = events.filter {
+        events.filter {
             it.date == selected.toString()
-        }
-
-        if (selectedEvents.isEmpty()) {
-            Text(
-                "На этот день событий нет",
-                color = muted
-            )
-        }
-
-        selectedEvents.forEach { event ->
+        }.forEach { event ->
             Text(
                 "• ${event.title}",
                 color = mint
             )
 
-            if (event.description.isNotBlank()) {
-                Text(
-                    event.description,
-                    color = muted,
-                    fontSize = 12.sp
-                )
-            }
-
-            if (event.reminder) {
-                Text(
-                    "Напоминание запрошено",
-                    color = gold,
-                    fontSize = 11.sp
-                )
-            }
-
             TextButton(
                 onClick = {
                     onEventsChange(
-                        events.filterNot {
-                            it.id == event.id
-                        }
+                        events.filterNot { it == event }
                     )
                 }
             ) {
-                Text("Удалить событие")
+                Text("Удалить")
             }
         }
 
+        Field("Новое событие", eventTitle) {
+            eventTitle = it
+        }
+
         Button(
-            onClick = { eventDialog = true },
+            onClick = {
+                if (eventTitle.isNotBlank()) {
+                    onEventsChange(
+                        events + CalendarEvent(
+                            selected.toString(),
+                            eventTitle.trim()
+                        )
+                    )
+                    eventTitle = ""
+                }
+            },
+            enabled = eventTitle.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Добавить событие")
@@ -2134,112 +2260,18 @@ private fun ShiftCalendar(
             Text("Сегодня")
         }
     }
-
-    if (eventDialog) {
-        EventEditor(
-            date = selected,
-            onDismiss = { eventDialog = false },
-            onSave = { title, description, reminder ->
-                val event = PersonalEvent(
-                    id = System.nanoTime().toString(),
-                    date = selected.toString(),
-                    title = title,
-                    description = description,
-                    reminder = reminder
-                )
-
-                onEventsChange(events + event)
-                eventDialog = false
-            }
-        )
-    }
-}
-
-@Composable
-private fun EventEditor(
-    date: LocalDate,
-    onDismiss: () -> Unit,
-    onSave: (String, String, Boolean) -> Unit
-) {
-    var title by remember(date) {
-        mutableStateOf("")
-    }
-
-    var description by remember(date) {
-        mutableStateOf("")
-    }
-
-    var reminder by remember(date) {
-        mutableStateOf(false)
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("Событие · ${date.pretty()}")
-        },
-        text = {
-            Column(
-                verticalArrangement =
-                    Arrangement.spacedBy(10.dp)
-            ) {
-                Field("Название", title) {
-                    title = it
-                }
-
-                Field("Описание", description) {
-                    description = it
-                }
-
-                ReminderChoice(
-                    "Напомнить о событии",
-                    reminder
-                ) {
-                    reminder = it
-                }
-
-                if (reminder) {
-                    Text(
-                        "Событие будет отмечено для " +
-                            "напоминания. Системные " +
-                            "уведомления пока не подключены.",
-                        color = gold,
-                        fontSize = 12.sp
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = title.isNotBlank(),
-                onClick = {
-                    onSave(
-                        title.trim(),
-                        description.trim(),
-                        reminder
-                    )
-                }
-            ) {
-                Text("Сохранить")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Отмена")
-            }
-        },
-        containerColor = panel
-    )
 }
 
 @Composable
 private fun Finance(
+    s: Config,
+    today: LocalDate,
     earnings: Double,
     payments: List<Payment>,
     onChange: (List<Payment>) -> Unit
 ) {
     var date by remember {
-        mutableStateOf(LocalDate.now().toString())
+        mutableStateOf(today.toString())
     }
 
     var amount by remember {
@@ -2250,13 +2282,15 @@ private fun Finance(
         mutableStateOf("Зарплата")
     }
 
-    var expected by remember {
-        mutableStateOf("")
-    }
-
     var editingIndex by remember {
         mutableIntStateOf(-1)
     }
+
+    val selectedDate = parseDate(date) ?: today
+
+    val forecast = estimateForPayday(
+        s, selectedDate, type
+    )
 
     Panel("НАЧИСЛЕНО ПО РАСЧЁТУ") {
         Text(
@@ -2267,9 +2301,8 @@ private fun Finance(
         )
 
         Text(
-            "Приблизительная сумма до удержаний " +
-                "за текущую вахту, а не сумма " +
-                "конкретной выплаты.",
+            "Ориентировочное начисление " +
+                "за текущую вахту до удержаний.",
             color = muted,
             fontSize = 12.sp
         )
@@ -2307,7 +2340,8 @@ private fun Finance(
             "Другое"
         ).forEach { option ->
             Row(
-                Modifier.fillMaxWidth()
+                Modifier
+                    .fillMaxWidth()
                     .clickable { type = option },
                 verticalAlignment =
                     Alignment.CenterVertically
@@ -2324,56 +2358,46 @@ private fun Finance(
             }
         }
 
-        HorizontalDivider()
-
-        Text(
-            "КОНТРОЛЬ НАЧИСЛЕНИЙ",
-            color = mint,
-            fontWeight = FontWeight.Bold
-        )
-
-        Field(
-            "Первоначальный прогноз выплаты, ₽",
-            expected,
-            true
-        ) {
-            expected = it
-        }
-
-        Text(
-            "Укажи прогноз именно за тот расчётный " +
-                "период, за который пришли деньги. " +
-                "Не используй общий счётчик вахты " +
-                "для проверки отдельного аванса.",
-            color = muted,
-            fontSize = 12.sp
-        )
-
-        val actualValue = num(amount)
-        val expectedValue = if (expected.isBlank()) {
-            null
+        if (forecast != null) {
+            Info(
+                "Предварительный прогноз",
+                rub(forecast)
+            )
         } else {
-            num(expected)
+            Text(
+                "Для этого типа выплаты " +
+                    "автоматический прогноз отсутствует.",
+                color = muted,
+                fontSize = 12.sp
+            )
         }
 
-        if (
-            actualValue > 0 &&
-            expectedValue != null &&
-            expectedValue > 0
-        ) {
-            DifferenceView(
-                expected = expectedValue,
-                actual = actualValue
+        if (num(amount) > 0 && forecast != null) {
+            val diff = num(amount) - forecast
+
+            Info(
+                "Расхождение",
+                rub(diff)
+            )
+
+            Text(
+                if (diff < 0)
+                    "Получено меньше прогноза"
+                else if (diff > 0)
+                    "Получено больше прогноза"
+                else
+                    "Суммы совпадают",
+                color = if (diff == 0.0) mint else gold
             )
         }
 
         Button(
             onClick = {
-                val item = Payment(
+                val payment = Payment(
                     date = date,
                     amount = num(amount),
                     type = type,
-                    expected = expectedValue
+                    forecast = forecast ?: -1.0
                 )
 
                 if (
@@ -2381,15 +2405,14 @@ private fun Finance(
                     editingIndex < payments.size
                 ) {
                     val updated = payments.toMutableList()
-                    updated[editingIndex] = item
+                    updated[editingIndex] = payment
                     onChange(updated)
                 } else {
-                    onChange(payments + item)
+                    onChange(payments + payment)
                 }
 
                 editingIndex = -1
                 amount = ""
-                expected = ""
             },
             enabled =
                 num(amount) > 0 &&
@@ -2402,18 +2425,6 @@ private fun Finance(
                 else
                     "Сохранить выплату"
             )
-        }
-
-        if (editingIndex >= 0) {
-            TextButton(
-                onClick = {
-                    editingIndex = -1
-                    amount = ""
-                    expected = ""
-                }
-            ) {
-                Text("Отменить редактирование")
-            }
         }
     }
 
@@ -2449,11 +2460,31 @@ private fun Finance(
                     fontWeight = FontWeight.Bold
                 )
 
-                item.expected?.let { forecast ->
-                    DifferenceView(
-                        expected = forecast,
-                        actual = item.amount
+                if (item.forecast >= 0.0) {
+                    Info(
+                        "Сохранённый прогноз",
+                        rub(item.forecast)
                     )
+
+                    val diff =
+                        item.amount - item.forecast
+
+                    Info(
+                        "Расхождение",
+                        rub(diff)
+                    )
+
+                    if (abs(diff) > 0.01) {
+                        Text(
+                            "Возможные причины: разница " +
+                                "в оплаченных часах, премиях, " +
+                                "надбавках или удержаниях. " +
+                                "Для точной проверки нужен " +
+                                "расчётный листок.",
+                            color = muted,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
 
                 Row {
@@ -2463,8 +2494,6 @@ private fun Finance(
                             date = item.date
                             amount = item.amount.toString()
                             type = item.type
-                            expected =
-                                item.expected?.toString() ?: ""
                         }
                     ) {
                         Text("Изменить")
@@ -2481,7 +2510,6 @@ private fun Finance(
                             if (editingIndex == index) {
                                 editingIndex = -1
                                 amount = ""
-                                expected = ""
                             }
                         }
                     ) {
@@ -2489,89 +2517,6 @@ private fun Finance(
                     }
                 }
             }
-    }
-}
-
-@Composable
-private fun DifferenceView(
-    expected: Double,
-    actual: Double
-) {
-    val difference = actual - expected
-
-    val percent = if (expected > 0) {
-        difference / expected * 100.0
-    } else {
-        0.0
-    }
-
-    val color = when {
-        abs(difference) < 0.01 -> mint
-        difference < 0 -> gold
-        else -> blue
-    }
-
-    Column(
-        verticalArrangement =
-            Arrangement.spacedBy(7.dp)
-    ) {
-        Info(
-            "Прогноз",
-            rub(expected)
-        )
-
-        Info(
-            "Фактически",
-            rub(actual)
-        )
-
-        Text(
-            "Расхождение: " +
-                "${if (difference > 0) "+" else ""}" +
-                rub(difference),
-            color = color,
-            fontSize = 19.sp,
-            fontWeight = FontWeight.Bold
-        )
-
-        Text(
-            "Отклонение: " +
-                String.format(
-                    ru, "%+.2f%%", percent
-                ),
-            color = color
-        )
-
-        if (abs(difference) < 0.01) {
-            Text(
-                "Суммы совпадают.",
-                color = mint
-            )
-        } else {
-            Text(
-                "Возможные причины: разница в " +
-                    "оплаченных часах, премиях, " +
-                    "надбавках, налогах или удержаниях.",
-                color = muted,
-                fontSize = 12.sp
-            )
-
-            Text(
-                "Расхождение не доказывает ошибку " +
-                    "бухгалтерии. Для проверки нужен " +
-                    "расчётный листок за тот же период.",
-                color = gold,
-                fontSize = 12.sp
-            )
-        }
-
-        Text(
-            "Первоначальный прогноз сохраняется " +
-                "отдельно и не подгоняется " +
-                "под фактическую сумму.",
-            color = muted,
-            fontSize = 11.sp
-        )
     }
 }
 
@@ -2769,7 +2714,8 @@ private fun Settings(
             "Другой порядок"
         ).forEach { option ->
             Row(
-                Modifier.fillMaxWidth()
+                Modifier
+                    .fillMaxWidth()
                     .clickable {
                         onChange(
                             s.copy(advanceMethod = option)
@@ -2890,7 +2836,8 @@ private fun Settings(
                 "7" to "За 7 дней"
             ).forEach { (days, label) ->
                 Row(
-                    Modifier.fillMaxWidth()
+                    Modifier
+                        .fillMaxWidth()
                         .clickable {
                             onChange(
                                 s.copy(remindDays = days)
