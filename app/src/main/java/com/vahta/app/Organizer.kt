@@ -39,7 +39,7 @@ private data class OrganizerItem(
     val date: String,
     val done: Boolean
 )
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrganizerScreen(context: Context) {
     val prefs = remember(context) {
