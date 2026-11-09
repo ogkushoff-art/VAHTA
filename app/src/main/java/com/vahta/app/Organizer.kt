@@ -1,34 +1,39 @@
 
 package com.vahta.app
 
+import android.app.DatePickerDialog
 import android.content.Context
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.LocalDate
+
+private val orgBackground = Color(0xFF0B1728)
+private val orgCard = Color(0xFF1A2D45)
+private val orgAccent = Color(0xFF56E4C0)
+private val orgMuted = Color(0xFFB4C6D9)
+private val orgBorder = Color(0xFF36506B)
 
 private val organizerCategories = listOf(
-    "Покупки на вахту",
-    "Подарки",
-    "Лекарства",
-    "Чемодан",
-    "Планы",
-    "Заметки",
-    "Расходы",
-    "Долги",
-    "Накопления",
-    "Тренировки",
-    "Питание",
-    "Вес",
-    "Сон",
-    "Настроение",
-    "Отпуск",
-    "Развлечения"
+    "Покупки на вахту", "Подарки", "Лекарства", "Чемодан",
+    "Планы", "Заметки", "Расходы", "Долги", "Накопления",
+    "Тренировки", "Питание", "Вес", "Сон", "Настроение",
+    "Отпуск", "Развлечения"
 )
 
 private data class OrganizerItem(
@@ -39,239 +44,333 @@ private data class OrganizerItem(
     val date: String,
     val done: Boolean
 )
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrganizerScreen(context: Context) {
     val prefs = remember(context) {
-        context.getSharedPreferences(
-            "vahta_organizer",
-            Context.MODE_PRIVATE
-        )
+        context.getSharedPreferences("vahta_organizer", Context.MODE_PRIVATE)
     }
-
     var items by remember {
-        mutableStateOf(
-            readOrganizer(prefs.getString("items", "[]") ?: "[]")
-        )
+        mutableStateOf(readOrganizer(prefs.getString("items", "[]") ?: "[]"))
     }
-
-    var category by remember {
-        mutableStateOf(organizerCategories.first())
-    }
-    var expanded by remember { mutableStateOf(false) }
+    var category by remember { mutableStateOf(organizerCategories.first()) }
+    var categoryMenu by remember { mutableStateOf(false) }
+    var editingId by remember { mutableStateOf<Long?>(null) }
+    var formOpen by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
     var details by remember { mutableStateOf("") }
     var date by remember { mutableStateOf("") }
-    var showForm by remember { mutableStateOf(false) }
+    var deleteId by remember { mutableStateOf<Long?>(null) }
 
     fun update(newItems: List<OrganizerItem>) {
         items = newItems
-        prefs.edit()
-            .putString("items", writeOrganizer(newItems))
-            .apply()
+        prefs.edit().putString("items", writeOrganizer(newItems)).apply()
     }
+
+    fun clearForm() {
+        editingId = null
+        title = ""
+        details = ""
+        date = ""
+        formOpen = false
+    }
+
+    val visible = items.filter { it.category == category }
+    val completed = visible.count { it.done }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .background(orgBackground)
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(
-            "МОИ ДЕЛА",
-            style = MaterialTheme.typography.headlineMedium
-        )
+        Text("МОИ ДЕЛА", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+        Text("Покупки · подарки · лекарства · планы", color = orgMuted, fontSize = 13.sp)
 
-        Text("Покупки, подарки, лекарства и планы")
-
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = it }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = orgCard),
+            shape = RoundedCornerShape(18.dp)
         ) {
-            OutlinedTextField(
-                value = category,
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("Раздел") },
-                trailingIcon = {
-                    ExposedDropdownMenuDefaults.TrailingIcon(
-                        expanded = expanded
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("РАЗДЕЛ", color = orgMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                ExposedDropdownMenuBox(
+                    expanded = categoryMenu,
+                    onExpandedChange = { categoryMenu = it }
+                ) {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        label = { Text("Выбрать категорию") },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryMenu)
+                        },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = orgAccent,
+                            unfocusedBorderColor = orgBorder,
+                            focusedLabelColor = orgAccent,
+                            unfocusedLabelColor = orgMuted
+                        )
                     )
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .menuAnchor()
-            )
-
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                organizerCategories.forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option) },
-                        onClick = {
-                            category = option
-                            expanded = false
+                    ExposedDropdownMenu(
+                        expanded = categoryMenu,
+                        onDismissRequest = { categoryMenu = false }
+                    ) {
+                        organizerCategories.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option) },
+                                onClick = {
+                                    category = option
+                                    categoryMenu = false
+                                    clearForm()
+                                }
+                            )
                         }
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Выполнено", color = orgMuted, fontSize = 13.sp)
+                    Text("$completed / ${visible.size}", color = orgAccent, fontWeight = FontWeight.Bold)
+                }
+                LinearProgressIndicator(
+                    progress = { if (visible.isEmpty()) 0f else completed.toFloat() / visible.size },
+                    modifier = Modifier.fillMaxWidth().height(5.dp),
+                    color = orgAccent,
+                    trackColor = orgBorder
+                )
+                Button(
+                    onClick = {
+                        if (formOpen) clearForm() else {
+                            clearForm()
+                            formOpen = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = orgAccent,
+                        contentColor = orgBackground
                     )
+                ) {
+                    Text(if (formOpen) "Отменить" else "+ Добавить запись")
                 }
             }
         }
 
-        val visible = items.filter {
-            it.category == category
-        }
-
-        Text(
-            "Выполнено: ${visible.count { it.done }} " +
-                "из ${visible.size}"
-        )
-
-        Button(
-            onClick = { showForm = !showForm },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (showForm) "Закрыть" else "+ Добавить запись")
-        }
-
-        if (showForm) {
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                label = { Text("Название") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = details,
-                onValueChange = { details = it },
-                label = {
-                    Text("Описание, дозировка, сумма или комментарий")
-                },
+        if (formOpen) {
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                minLines = 2
-            )
-
-            OutlinedTextField(
-                value = date,
-                onValueChange = { date = it },
-                label = { Text("Дата или время (необязательно)") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Button(
-                enabled = title.isNotBlank(),
-                onClick = {
-                    val nextId = (
-                        items.maxOfOrNull { it.id } ?: 0L
-                    ) + 1L
-
-                    update(
-                        items + OrganizerItem(
-                            id = nextId,
-                            category = category,
-                            title = title.trim(),
-                            details = details.trim(),
-                            date = date.trim(),
-                            done = false
-                        )
-                    )
-
-                    title = ""
-                    details = ""
-                    date = ""
-                    showForm = false
-                },
-                modifier = Modifier.fillMaxWidth()
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = orgCard)
             ) {
-                Text("Сохранить")
+                Column(
+                    Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        if (editingId == null) "НОВАЯ ЗАПИСЬ" else "РЕДАКТИРОВАНИЕ",
+                        color = orgAccent,
+                        fontWeight = FontWeight.Bold
+                    )
+                    OrganizerInput("Название", title) { title = it }
+                    OrganizerInput("Описание, количество, дозировка или сумма", details) {
+                        details = it
+                    }
+                    OrganizerInput("Дата / время (произвольная заметка)", date) {
+                        date = it
+                    }
+                    val pickerContext = LocalContext.current
+                    OutlinedButton(
+                        onClick = {
+                            val initial = runCatching { LocalDate.parse(date) }
+                                .getOrDefault(LocalDate.now())
+                            DatePickerDialog(
+                                pickerContext,
+                                { _, year, month, day ->
+                                    date = LocalDate.of(year, month + 1, day).toString()
+                                },
+                                initial.year,
+                                initial.monthValue - 1,
+                                initial.dayOfMonth
+                            ).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Выбрать дату в календаре", color = orgAccent)
+                    }
+                    Button(
+                        enabled = title.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            val id = editingId
+                            if (id == null) {
+                                val nextId = (items.maxOfOrNull { it.id } ?: 0L) + 1L
+                                update(items + OrganizerItem(
+                                    nextId, category, title.trim(), details.trim(), date.trim(), false
+                                ))
+                            } else {
+                                update(items.map { item ->
+                                    if (item.id == id) item.copy(
+                                        title = title.trim(),
+                                        details = details.trim(),
+                                        date = date.trim()
+                                    ) else item
+                                })
+                            }
+                            clearForm()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = orgAccent,
+                            contentColor = orgBackground
+                        )
+                    ) {
+                        Text("Сохранить")
+                    }
+                }
             }
         }
 
         if (visible.isEmpty()) {
-            Text("В этом разделе пока нет записей")
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = orgCard),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text(
+                    "В этом разделе пока нет записей",
+                    color = orgMuted,
+                    modifier = Modifier.padding(20.dp)
+                )
+            }
         }
 
-        visible.forEach { item ->
-            Card(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+        visible.sortedWith(compareBy<OrganizerItem> { it.done }.thenBy { it.id })
+            .forEach { item ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = orgCard),
+                    shape = RoundedCornerShape(18.dp)
                 ) {
-                    Row {
-                        Checkbox(
-                            checked = item.done,
-                            onCheckedChange = { checked ->
-                                update(
-                                    items.map {
-                                        if (it.id == item.id) {
-                                            it.copy(done = checked)
-                                        } else it
-                                    }
-                                )
-                            }
-                        )
-
-                        Text(
-                            item.title,
-                            modifier = Modifier.padding(top = 12.dp),
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-
-                    if (item.details.isNotBlank()) {
-                        Text(item.details)
-                    }
-
-                    if (item.date.isNotBlank()) {
-                        Text("Дата / время: ${item.date}")
-                    }
-
-                    TextButton(
-                        onClick = {
-                            update(
-                                items.filterNot {
-                                    it.id == item.id
-                                }
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = item.done,
+                                onCheckedChange = { checked ->
+                                    update(items.map {
+                                        if (it.id == item.id) it.copy(done = checked) else it
+                                    })
+                                },
+                                colors = CheckboxDefaults.colors(checkedColor = orgAccent)
+                            )
+                            Text(
+                                item.title,
+                                modifier = Modifier.weight(1f).clickable {
+                                    editingId = item.id
+                                    title = item.title
+                                    details = item.details
+                                    date = item.date
+                                    formOpen = true
+                                },
+                                color = if (item.done) orgMuted else Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 16.sp,
+                                textDecoration = if (item.done) TextDecoration.LineThrough else null
                             )
                         }
-                    ) {
-                        Text("Удалить")
+                        if (item.details.isNotBlank()) {
+                            Text(item.details, color = orgMuted, fontSize = 13.sp)
+                        }
+                        if (item.date.isNotBlank()) {
+                            Text("Дата / время: ${item.date}", color = orgAccent, fontSize = 12.sp)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = {
+                                editingId = item.id
+                                title = item.title
+                                details = item.details
+                                date = item.date
+                                formOpen = true
+                            }) {
+                                Text("Изменить", color = orgAccent)
+                            }
+                            TextButton(onClick = { deleteId = item.id }) {
+                                Text("Удалить", color = Color(0xFFFF9C9C))
+                            }
+                        }
                     }
                 }
             }
-        }
+    }
+
+    if (deleteId != null) {
+        AlertDialog(
+            onDismissRequest = { deleteId = null },
+            title = { Text("Удалить запись?") },
+            text = { Text("Это действие нельзя отменить.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val id = deleteId
+                    update(items.filterNot { it.id == id })
+                    if (editingId == id) clearForm()
+                    deleteId = null
+                }) { Text("Удалить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteId = null }) { Text("Отмена") }
+            }
+        )
     }
 }
 
-private fun readOrganizer(raw: String): List<OrganizerItem> {
-    return runCatching {
-        val array = JSONArray(raw)
-
-        (0 until array.length()).map { index ->
-            val obj = array.getJSONObject(index)
-
-            OrganizerItem(
-                id = obj.getLong("id"),
-                category = obj.getString("category"),
-                title = obj.getString("title"),
-                details = obj.optString("details"),
-                date = obj.optString("date"),
-                done = obj.optBoolean("done")
-            )
-        }
-    }.getOrDefault(emptyList())
+@Composable
+private fun OrganizerInput(label: String, value: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(label) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color.White,
+            focusedBorderColor = orgAccent,
+            unfocusedBorderColor = orgBorder,
+            focusedLabelColor = orgAccent,
+            unfocusedLabelColor = orgMuted
+        )
+    )
 }
 
-private fun writeOrganizer(
-    items: List<OrganizerItem>
-): String {
-    val array = JSONArray()
+private fun readOrganizer(raw: String): List<OrganizerItem> = runCatching {
+    val array = JSONArray(raw)
+    (0 until array.length()).map { index ->
+        val obj = array.getJSONObject(index)
+        OrganizerItem(
+            id = obj.getLong("id"),
+            category = obj.getString("category"),
+            title = obj.getString("title"),
+            details = obj.optString("details"),
+            date = obj.optString("date"),
+            done = obj.optBoolean("done")
+        )
+    }
+}.getOrDefault(emptyList())
 
+private fun writeOrganizer(items: List<OrganizerItem>): String {
+    val array = JSONArray()
     items.forEach { item ->
         array.put(
             JSONObject()
@@ -283,6 +382,5 @@ private fun writeOrganizer(
                 .put("done", item.done)
         )
     }
-
     return array.toString()
 }
