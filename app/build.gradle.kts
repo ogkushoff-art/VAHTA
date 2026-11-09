@@ -39,4 +39,6 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+implementation("androidx.biometric:biometric:1.1.0")
+implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }
