@@ -1,11 +1,12 @@
 
 package com.vahta.app
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -19,6 +20,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
@@ -28,13 +32,95 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 
-private val bg = Color(0xFF0B1728)
-private val panel = Color(0xFF1A2D45)
-private val accent = Color(0xFF56E4C0)
-private val muted = Color(0xFFB4C6D9)
+private val navy = Color(0xFF0B1728)
+private val surface = Color(0xFF192D45)
+private val mint = Color(0xFF56E4C0)
+private val secondary = Color(0xFFB4C6D9)
 private val blue = Color(0xFF4389D8)
-private val orange = Color(0xFFFFB45B)
-private val ru = Locale.forLanguageTag("ru-RU")
+private val gold = Color(0xFFFFB45B)
+private val locale = Locale.forLanguageTag("ru-RU")
+
+private fun LocalDate.display(): String =
+    format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+
+private fun parseDate(s: String): LocalDate? =
+    runCatching { LocalDate.parse(s) }.getOrNull()
+
+private fun decimal(s: String): Double =
+    s.replace(',', '.').toDoubleOrNull()
+        ?.takeIf { it.isFinite() && it >= 0.0 } ?: 0.0
+
+private fun rubles(value: Double): String =
+    NumberFormat.getCurrencyInstance(locale).format(value)
+
+private fun shiftedDate(
+    date: LocalDate,
+    months: Long
+): LocalDate {
+    val target = YearMonth.from(date).plusMonths(months)
+    return target.atDay(
+        date.dayOfMonth.coerceAtMost(target.lengthOfMonth())
+    )
+}
+
+private data class ShiftPeriod(
+    val start: LocalDate,
+    val end: LocalDate,
+    val nextStart: LocalDate,
+    val atWork: Boolean,
+    val elapsed: Long,
+    val total: Long,
+    val remaining: Long,
+    val progress: Float
+)
+
+private fun periodFor(
+    day: LocalDate,
+    arrival: LocalDate,
+    departure: LocalDate,
+    interval: Int
+): ShiftPeriod {
+    val months = interval.coerceIn(1, 24).toLong()
+    val difference = ChronoUnit.MONTHS.between(
+        YearMonth.from(arrival),
+        YearMonth.from(day)
+    )
+
+    var index = Math.floorDiv(difference, months)
+
+    fun start(i: Long) = shiftedDate(arrival, i * months)
+    fun end(i: Long) = shiftedDate(departure, i * months)
+
+    while (day.isBefore(start(index))) index--
+    while (!day.isBefore(start(index + 1))) index++
+
+    val shiftStart = start(index)
+    val shiftEnd = end(index)
+    val next = start(index + 1)
+    val working = !day.isAfter(shiftEnd)
+
+    val beginning = if (working) shiftStart else shiftEnd.plusDays(1)
+    val ending = if (working) shiftEnd else next.minusDays(1)
+
+    val total = (
+        ChronoUnit.DAYS.between(beginning, ending) + 1
+    ).coerceAtLeast(1)
+
+    val elapsed = (
+        ChronoUnit.DAYS.between(beginning, day) + 1
+    ).coerceIn(0, total)
+
+    return ShiftPeriod(
+        start = shiftStart,
+        end = shiftEnd,
+        nextStart = next,
+        atWork = working,
+        elapsed = elapsed,
+        total = total,
+        remaining = total - elapsed,
+        progress = elapsed.toFloat() / total
+    )
+}
 
 private data class Payment(
     val date: String,
@@ -42,1471 +128,196 @@ private data class Payment(
     val type: String
 )
 
-private data class Shift(
-    val arrival: LocalDate,
-    val departure: LocalDate,
-    val nextArrival: LocalDate,
-    val working: Boolean,
-    val progress: Float,
-    val remaining: Long,
-    val periodDays: Long
+private fun readPayments(raw: String): List<Payment> =
+    runCatching {
+        val array = JSONArray(raw)
+        (0 until array.length()).map {
+            val item = array.getJSONObject(it)
+            Payment(
+                item.optString("date"),
+                item.optDouble("amount"),
+                item.optString("type")
+            )
+        }
+    }.getOrDefault(emptyList())
+
+private fun writePayments(items: List<Payment>): String {
+    val array = JSONArray()
+    items.forEach {
+        array.put(
+            JSONObject()
+                .put("date", it.date)
+                .put("amount", it.amount)
+                .put("type", it.type)
+        )
+    }
+    return array.toString()
+}
+
+private data class Settings(
+    val name: String = "",
+    val arrival: String = "",
+    val departure: String = "",
+    val interval: String = "",
+    val hourly: String = "",
+    val hours: String = "",
+    val workDays: String = "",
+    val restDays: String = "",
+    val coefficient: String = "",
+    val north: String = "",
+    val premium: String = "",
+    val shiftAllowance: String = "",
+    val travelHours: String = "",
+    val intershiftHours: String = "",
+    val intershiftRate: String = "",
+    val tax: String = "",
+    val meals: String = "",
+    val enforcement: String = "",
+    val otherDeductions: String = "",
+    val advanceDay: String = "",
+    val salaryDay: String = "",
+    val advanceMethod: String = "По отработанным часам",
+    val fixedAdvance: String = "",
+    val notes: String = ""
 )
 
-private fun parseDate(value: String): LocalDate? =
-    runCatching { LocalDate.parse(value) }.getOrNull()
-
-private fun LocalDate.pretty(): String =
-    format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))
-
-private fun number(value: String): Double =
-    value.replace(',', '.').toDoubleOrNull()
-        ?.takeIf { it.isFinite() && it >= 0.0 } ?: 0.0
-
-private fun monthlyDate(
-    original: LocalDate,
-    months: Long
-): LocalDate {
-    val month = YearMonth.from(original).plusMonths(months)
-    return month.atDay(
-        original.dayOfMonth.coerceAtMost(month.lengthOfMonth())
-    )
-}
-
-private fun calculateShift(
-    date: LocalDate,
-    firstArrival: LocalDate,
-    firstDeparture: LocalDate,
-    intervalMonths: Int
-): Shift {
-    val interval = intervalMonths.coerceIn(1, 24).toLong()
-
-    fun arrival(index: Long): LocalDate =
-        monthlyDate(firstArrival, index * interval)
-
-    fun departure(index: Long): LocalDate =
-        monthlyDate(firstDeparture, index * interval)
-
-    val monthDifference = ChronoUnit.MONTHS.between(
-        YearMonth.from(firstArrival),
-        YearMonth.from(date)
+private fun readSettings(p: SharedPreferences): Settings =
+    Settings(
+        name = p.getString("name", "") ?: "",
+        arrival = p.getString(
+            "arrival_date",
+            p.getString("start", "") ?: ""
+        ) ?: "",
+        departure = p.getString("departure_date", "") ?: "",
+        interval = p.getString("interval_months", "") ?: "",
+        hourly = p.getString("hourly", "") ?: "",
+        hours = p.getString("hours", "") ?: "",
+        workDays = p.getString("work_days", "") ?: "",
+        restDays = p.getString("rest_days", "") ?: "",
+        coefficient = p.getString("coefficient", "") ?: "",
+        north = p.getString("north", "") ?: "",
+        premium = p.getString("bonus", "") ?: "",
+        shiftAllowance = p.getString("shift_allowance", "") ?: "",
+        travelHours = p.getString("travel_hours", "") ?: "",
+        intershiftHours = p.getString("intershift_hours", "") ?: "",
+        intershiftRate = p.getString("intershift_rate", "") ?: "",
+        tax = p.getString("tax", "") ?: "",
+        meals = p.getString("meals", "") ?: "",
+        enforcement = p.getString("enforcement", "") ?: "",
+        otherDeductions = p.getString("other_deductions", "") ?: "",
+        advanceDay = p.getString("advance", "") ?: "",
+        salaryDay = p.getString("payday", "") ?: "",
+        advanceMethod = p.getString(
+            "advance_rule",
+            "По отработанным часам"
+        ) ?: "По отработанным часам",
+        fixedAdvance = p.getString("fixed_advance", "") ?: "",
+        notes = p.getString("pay_notes", "") ?: ""
     )
 
-    var index = Math.floorDiv(monthDifference, interval)
-
-    while (date.isBefore(arrival(index))) index--
-    while (!date.isBefore(arrival(index + 1))) index++
-
-    val start = arrival(index)
-    val end = departure(index)
-    val next = arrival(index + 1)
-
-    val working = !date.isAfter(end)
-    val periodStart = if (working) start else end.plusDays(1)
-    val periodEnd = if (working) end else next.minusDays(1)
-
-    val total = (
-        ChronoUnit.DAYS.between(periodStart, periodEnd) + 1
-    ).coerceAtLeast(1)
-
-    val elapsed = (
-        ChronoUnit.DAYS.between(periodStart, date) + 1
-    ).coerceIn(0, total)
-
-    return Shift(
-        arrival = start,
-        departure = end,
-        nextArrival = next,
-        working = working,
-        progress = elapsed.toFloat() / total.toFloat(),
-        remaining = total - elapsed,
-        periodDays = total
-    )
-}
-
-private fun nextPaymentDate(
-    today: LocalDate,
-    day: Int
-): LocalDate {
-    val currentMonth = YearMonth.from(today)
-
-    fun inMonth(month: YearMonth): LocalDate =
-        month.atDay(day.coerceIn(1, month.lengthOfMonth()))
-
-    val current = inMonth(currentMonth)
-    return if (current.isBefore(today)) {
-        inMonth(currentMonth.plusMonths(1))
-    } else current
+private fun saveSettings(
+    p: SharedPreferences,
+    s: Settings
+) {
+    p.edit()
+        .putString("name", s.name)
+        .putString("arrival_date", s.arrival)
+        .putString("departure_date", s.departure)
+        .putString("interval_months", s.interval)
+        .putString("hourly", s.hourly)
+        .putString("hours", s.hours)
+        .putString("work_days", s.workDays)
+        .putString("rest_days", s.restDays)
+        .putString("coefficient", s.coefficient)
+        .putString("north", s.north)
+        .putString("bonus", s.premium)
+        .putString("shift_allowance", s.shiftAllowance)
+        .putString("travel_hours", s.travelHours)
+        .putString("intershift_hours", s.intershiftHours)
+        .putString("intershift_rate", s.intershiftRate)
+        .putString("tax", s.tax)
+        .putString("meals", s.meals)
+        .putString("enforcement", s.enforcement)
+        .putString("other_deductions", s.otherDeductions)
+        .putString("advance", s.advanceDay)
+        .putString("payday", s.salaryDay)
+        .putString("advance_rule", s.advanceMethod)
+        .putString("fixed_advance", s.fixedAdvance)
+        .putString("pay_notes", s.notes)
+        .apply()
 }
 
 class MainActivity : FragmentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val prefs = getSharedPreferences(
+        val preferences = getSharedPreferences(
             "vahta_settings",
-            MODE_PRIVATE
+            Context.MODE_PRIVATE
         )
 
         setContent {
             var unlocked by remember { mutableStateOf(false) }
-
-            if (!unlocked) {
-                SecurityScreen(
-                    onUnlocked = { unlocked = true }
+            var setupComplete by remember {
+                mutableStateOf(
+                    preferences.getBoolean("setup_complete", false)
                 )
-            } else {
-                var setupComplete by remember {
-                    mutableStateOf(
-                        prefs.getBoolean("setup_complete", false)
-                    )
-                }
+            }
+            var settings by remember {
+                mutableStateOf(readSettings(preferences))
+            }
 
-                var name by remember {
-                    mutableStateOf(
-                        prefs.getString("name", "") ?: ""
-                    )
-                }
+            val owner = LocalLifecycleOwner.current
+            var leftForeground by remember { mutableStateOf(false) }
 
-                var arrivalDate by remember {
-                    mutableStateOf(
-                        prefs.getString(
-                            "arrival_date",
-                            prefs.getString("start", "") ?: ""
-                        ) ?: ""
-                    )
-                }
-
-                var departureDate by remember {
-                    mutableStateOf(
-                        prefs.getString("departure_date", "") ?: ""
-                    )
-                }
-
-                var interval by remember {
-                    mutableStateOf(
-                        prefs.getString("interval_months", "3") ?: "3"
-                    )
-                }
-
-                var rate by remember {
-                    mutableStateOf(
-                        prefs.getString("hourly", "") ?: ""
-                    )
-                }
-
-                var hours by remember {
-                    mutableStateOf(
-                        prefs.getString("hours", "") ?: ""
-                    )
-                }
-
-                var coefficient by remember {
-                    mutableStateOf(
-                        prefs.getString("coefficient", "1") ?: "1"
-                    )
-                }
-
-                var bonus by remember {
-                    mutableStateOf(
-                        prefs.getString("bonus", "0") ?: "0"
-                    )
-                }
-
-                var tax by remember {
-                    mutableStateOf(
-                        prefs.getString("tax", "13") ?: "13"
-                    )
-                }
-
-                var advance by remember {
-                    mutableStateOf(
-                        prefs.getString("advance", "") ?: ""
-                    )
-                }
-
-                var salary by remember {
-                    mutableStateOf(
-                        prefs.getString("payday", "") ?: ""
-                    )
-                }
-
-                var advanceRule by remember {
-                    mutableStateOf(
-                        prefs.getString(
-                            "advance_rule",
-                            "По отработанным часам"
-                        ) ?: "По отработанным часам"
-                    )
-                }
-
-                var fixedAdvance by remember {
-                    mutableStateOf(
-                        prefs.getString("fixed_advance", "") ?: ""
-                    )
-                }
-
-                var intershift by remember {
-                    mutableStateOf(
-                        prefs.getString("intershift", "") ?: ""
-                    )
-                }
-
-                var payNotes by remember {
-                    mutableStateOf(
-                        prefs.getString("pay_notes", "") ?: ""
-                    )
-                }
-
-                // Перенос старого графика без удаления данных.
-                LaunchedEffect(Unit) {
-                    if (
-                        departureDate.isBlank() &&
-                        setupComplete &&
-                        arrivalDate.isNotBlank()
-                    ) {
-                        val oldArrival = parseDate(arrivalDate)
-                        val oldDepartureDay = prefs.getString(
-                            "departure_day", ""
-                        )?.toIntOrNull()
-
-                        if (
-                            oldArrival != null &&
-                            oldDepartureDay != null
-                        ) {
-                            val month = YearMonth.from(
-                                oldArrival
-                            ).plusMonths(2)
-
-                            departureDate = month.atDay(
-                                oldDepartureDay.coerceIn(
-                                    1, month.lengthOfMonth()
-                                )
-                            ).toString()
-
-                            prefs.edit().putString(
-                                "departure_date",
-                                departureDate
-                            ).apply()
+            DisposableEffect(owner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_STOP -> {
+                            if (unlocked) leftForeground = true
                         }
+                        Lifecycle.Event.ON_START -> {
+                            if (leftForeground) {
+                                unlocked = false
+                                leftForeground = false
+                            }
+                        }
+                        else -> Unit
                     }
                 }
-
-                fun save() {
-                    prefs.edit()
-                        .putString("name", name)
-                        .putString("arrival_date", arrivalDate)
-                        .putString("departure_date", departureDate)
-                        .putString("interval_months", interval)
-                        .putString("hourly", rate)
-                        .putString("hours", hours)
-                        .putString("coefficient", coefficient)
-                        .putString("bonus", bonus)
-                        .putString("tax", tax)
-                        .putString("advance", advance)
-                        .putString("payday", salary)
-                        .putString("advance_rule", advanceRule)
-                        .putString("fixed_advance", fixedAdvance)
-                        .putString("intershift", intershift)
-                        .putString("pay_notes", payNotes)
-                        .apply()
+                owner.lifecycle.addObserver(observer)
+                onDispose {
+                    owner.lifecycle.removeObserver(observer)
                 }
+            }
 
-                if (!setupComplete) {
+            AppTheme {
+                if (!unlocked) {
+                    SecurityScreen(
+                        onUnlocked = { unlocked = true }
+                    )
+                } else if (!setupComplete) {
                     SetupWizard(
-                        onFinish = { values ->
-                            name = values[0]
-                            arrivalDate = values[1]
-                            departureDate = values[2]
-                            interval = values[3]
-                            rate = values[4]
-                            hours = values[5]
-                            coefficient = values[6]
-                            bonus = values[7]
-                            tax = values[8]
-                            advance = values[9]
-                            salary = values[10]
-                            advanceRule = values[11]
-                            fixedAdvance = values[12]
-                            intershift = values[13]
-                            payNotes = values[14]
-
-                            save()
-
-                            prefs.edit()
-                                .putBoolean(
-                                    "setup_complete", true
-                                )
+                        initial = settings,
+                        onFinish = {
+                            settings = it
+                            saveSettings(preferences, it)
+                            preferences.edit()
+                                .putBoolean("setup_complete", true)
                                 .apply()
-
                             setupComplete = true
                         }
                     )
                 } else {
-                    var tab by remember {
-                        mutableIntStateOf(0)
-                    }
-
-                    var clock by remember {
-                        mutableLongStateOf(
-                            System.currentTimeMillis()
-                        )
-                    }
-
-                    LaunchedEffect(Unit) {
-                        while (true) {
-                            clock = System.currentTimeMillis()
-                            delay(1000)
-                        }
-                    }
-
-                    val today = remember(clock / 1000) {
-                        LocalDate.now()
-                    }
-
-                    val firstArrival = parseDate(arrivalDate)
-                    val firstDeparture = parseDate(departureDate)
-
-                    val months = (
-                        interval.toIntOrNull() ?: 3
-                    ).coerceIn(1, 24)
-
-                    val validSchedule =
-                        firstArrival != null &&
-                        firstDeparture != null &&
-                        firstDeparture.isAfter(firstArrival) &&
-                        firstDeparture.isBefore(
-                            monthlyDate(firstArrival, months)
-                        )
-
-                    val current = if (validSchedule) {
-                        calculateShift(
-                            today,
-                            firstArrival!!,
-                            firstDeparture!!,
-                            months
-                        )
-                    } else null
-
-                    val hourly = number(rate)
-                    val dailyHours = number(hours)
-                    val factor = number(coefficient)
-
-                    val elapsedDays = if (current == null) {
-                        0L
-                    } else if (current.working) {
-                        ChronoUnit.DAYS.between(
-                            current.arrival, today
-                        ).coerceAtLeast(0)
-                    } else {
-                        ChronoUnit.DAYS.between(
-                            current.arrival,
-                            current.departure
-                        ) + 1
-                    }
-
-                    val estimatedGross =
-                        elapsedDays * hourly * dailyHours * factor
-
-                    val formatter = remember {
-                        NumberFormat.getCurrencyInstance(ru)
-                    }
-
-                    var payDate by remember {
-                        mutableStateOf(today.toString())
-                    }
-
-                    var payAmount by remember {
-                        mutableStateOf("")
-                    }
-
-                    var payType by remember {
-                        mutableStateOf("Зарплата")
-                    }
-
-                    var payments by remember {
-                        mutableStateOf(
-                            loadPayments(
-                                prefs.getString("payments", "[]")
-                                    ?: "[]"
-                            )
-                        )
-                    }
-
-                    fun savePayments() {
-                        prefs.edit()
-                            .putString(
-                                "payments",
-                                encodePayments(payments)
-                            )
-                            .apply()
-                    }
-
-                    MaterialTheme(
-                        colorScheme = darkColorScheme(
-                            primary = accent,
-                            background = bg,
-                            surface = panel,
-                            onSurface = Color.White,
-                            onBackground = Color.White
-                        )
-                    ) {
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .background(bg)
-                        ) {
-                            val bodyModifier =
-                                if (tab == 3) {
-                                    Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth()
-                                } else {
-                                    Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth()
-                                        .verticalScroll(
-                                            rememberScrollState()
-                                        )
-                                }
-
-                            Column(
-                                modifier = bodyModifier
-                                    .padding(16.dp),
-                                verticalArrangement =
-                                    Arrangement.spacedBy(14.dp)
-                            ) {
-                                Text(
-                                    "ВАХТА",
-                                    color = Color.White,
-                                    fontSize = 30.sp,
-                                    fontWeight = FontWeight.Black
-                                )
-
-                                Text(
-                                    if (name.isBlank())
-                                        "Добро пожаловать!"
-                                    else "Привет, ${name.trim()}!",
-                                    color = muted,
-                                    fontSize = 18.sp
-                                )
-
-                                when (tab) {
-                                    0 -> {
-                                        AppPanel("МОЙ ГРАФИК") {
-                                            if (current == null) {
-                                                Text(
-                                                    "Необходимо настроить даты заезда и выезда.",
-                                                    color = orange
-                                                )
-
-                                                Button(
-                                                    onClick = {
-                                                        tab = 4
-                                                    }
-                                                ) {
-                                                    Text(
-                                                        "Настроить график"
-                                                    )
-                                                }
-                                            } else {
-                                                Text(
-                                                    if (current.working)
-                                                        "НА ВАХТЕ"
-                                                    else "НА МЕЖВАХТЕ",
-                                                    color =
-                                                        if (current.working)
-                                                            accent
-                                                        else blue,
-                                                    fontWeight =
-                                                        FontWeight.Bold
-                                                )
-
-                                                Text(
-                                                    if (current.working)
-                                                        "До выезда домой: ${current.remaining} дн."
-                                                    else
-                                                        "До заезда: ${current.remaining} дн.",
-                                                    color = Color.White,
-                                                    fontSize = 22.sp
-                                                )
-
-                                                LinearProgressIndicator(
-                                                    progress = {
-                                                        current.progress
-                                                    },
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .height(10.dp),
-                                                    color =
-                                                        if (current.working)
-                                                            accent
-                                                        else blue,
-                                                    trackColor =
-                                                        Color(0xFF354C65)
-                                                )
-
-                                                Row(
-                                                    Modifier.fillMaxWidth(),
-                                                    horizontalArrangement =
-                                                        Arrangement.SpaceBetween
-                                                ) {
-                                                    Text(
-                                                        "Пройдено ${(current.progress * 100).toInt()}%",
-                                                        color = muted,
-                                                        fontSize = 12.sp
-                                                    )
-
-                                                    Text(
-                                                        "${current.periodDays} дней",
-                                                        color = muted,
-                                                        fontSize = 12.sp
-                                                    )
-                                                }
-
-                                                Text(
-                                                    "Заезд: ${current.arrival.pretty()}",
-                                                    color = muted
-                                                )
-
-                                                Text(
-                                                    "Домой: ${current.departure.pretty()} 🎉",
-                                                    color = orange
-                                                )
-
-                                                Text(
-                                                    "Следующий заезд: ${current.nextArrival.pretty()}",
-                                                    color = muted
-                                                )
-                                            }
-                                        }
-
-                                        AppPanel("РАСЧЁТНЫЙ ЗАРАБОТОК") {
-                                            Text(
-                                                formatter.format(
-                                                    estimatedGross
-                                                ),
-                                                color = accent,
-                                                fontSize = 27.sp,
-                                                fontWeight =
-                                                    FontWeight.Bold
-                                            )
-
-                                            Text(
-                                                "Предварительный расчёт за завершённые календарные дни. Без учёта выходных, фактических часов, налогов и премий.",
-                                                color = muted,
-                                                fontSize = 12.sp
-                                            )
-                                        }
-
-                                        AppPanel("БЛИЖАЙШАЯ ВЫПЛАТА") {
-                                            val salaryDay =
-                                                salary.toIntOrNull()
-
-                                            val advanceDay =
-                                                advance.toIntOrNull()
-
-                                            val options =
-                                                mutableListOf<
-                                                    Pair<String, LocalDate>
-                                                >()
-
-                                            if (
-                                                salaryDay != null &&
-                                                salaryDay in 1..31
-                                            ) {
-                                                options.add(
-                                                    "Зарплата" to
-                                                        nextPaymentDate(
-                                                            today,
-                                                            salaryDay
-                                                        )
-                                                )
-                                            }
-
-                                            if (
-                                                advanceDay != null &&
-                                                advanceDay in 1..31
-                                            ) {
-                                                options.add(
-                                                    "Аванс" to
-                                                        nextPaymentDate(
-                                                            today,
-                                                            advanceDay
-                                                        )
-                                                )
-                                            }
-
-                                            val nearest =
-                                                options.minByOrNull {
-                                                    it.second
-                                                }
-
-                                            if (nearest != null) {
-                                                Text(
-                                                    "${nearest.first} · ${nearest.second.pretty()}",
-                                                    color = Color.White,
-                                                    fontSize = 19.sp
-                                                )
-                                            } else {
-                                                Text(
-                                                    "Даты выплат не указаны",
-                                                    color = orange
-                                                )
-                                            }
-
-                                            Text(
-                                                "Расчёт суммы к получению пока не настроен.",
-                                                color = muted,
-                                                fontSize = 12.sp
-                                            )
-                                        }
-
-                                        Button(
-                                            onClick = { tab = 1 },
-                                            modifier =
-                                                Modifier.fillMaxWidth()
-                                        ) {
-                                            Text("Открыть календарь")
-                                        }
-                                    }
-
-                                    1 -> {
-                                        if (
-                                            firstArrival != null &&
-                                            firstDeparture != null &&
-                                            validSchedule
-                                        ) {
-                                            ShiftCalendar(
-                                                today = today,
-                                                firstArrival = firstArrival,
-                                                firstDeparture = firstDeparture,
-                                                intervalMonths = months
-                                            )
-                                        } else {
-                                            AppPanel("КАЛЕНДАРЬ") {
-                                                Text(
-                                                    "Сначала выбери даты заезда и выезда в настройках.",
-                                                    color = muted
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    2 -> {
-                                        AppPanel("НАЧИСЛЕНИЯ") {
-                                            Text(
-                                                "Предварительно начислено",
-                                                color = muted
-                                            )
-
-                                            Text(
-                                                formatter.format(
-                                                    estimatedGross
-                                                ),
-                                                color = accent,
-                                                fontSize = 25.sp
-                                            )
-                                        }
-
-                                        AppPanel("ДОБАВИТЬ ВЫПЛАТУ") {
-                                            AppDateField(
-                                                "Дата получения",
-                                                payDate
-                                            ) {
-                                                payDate = it
-                                            }
-
-                                            AppField(
-                                                "Получено, ₽",
-                                                payAmount,
-                                                true
-                                            ) {
-                                                payAmount = it
-                                            }
-
-                                            listOf(
-                                                "Зарплата",
-                                                "Аванс",
-                                                "Межвахта",
-                                                "Смешанная",
-                                                "Отпускные",
-                                                "Другое"
-                                            ).forEach { option ->
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .clickable {
-                                                            payType = option
-                                                        },
-                                                    verticalAlignment =
-                                                        Alignment.CenterVertically
-                                                ) {
-                                                    RadioButton(
-                                                        selected =
-                                                            payType == option,
-                                                        onClick = {
-                                                            payType = option
-                                                        }
-                                                    )
-
-                                                    Text(
-                                                        option,
-                                                        color = Color.White
-                                                    )
-                                                }
-                                            }
-
-                                            val value =
-                                                number(payAmount)
-
-                                            Button(
-                                                onClick = {
-                                                    payments =
-                                                        payments + Payment(
-                                                            payDate,
-                                                            value,
-                                                            payType
-                                                        )
-                                                    savePayments()
-                                                    payAmount = ""
-                                                },
-                                                enabled = value > 0,
-                                                modifier =
-                                                    Modifier.fillMaxWidth()
-                                            ) {
-                                                Text(
-                                                    "Сохранить выплату"
-                                                )
-                                            }
-                                        }
-
-                                        AppPanel("ИСТОРИЯ ВЫПЛАТ") {
-                                            if (payments.isEmpty()) {
-                                                Text(
-                                                    "Пока нет записей",
-                                                    color = muted
-                                                )
-                                            }
-
-                                            payments
-                                                .sortedByDescending {
-                                                    it.date
-                                                }
-                                                .forEach { item ->
-                                                    HorizontalDivider()
-
-                                                    Text(
-                                                        "${item.date} · ${item.type}",
-                                                        color = muted
-                                                    )
-
-                                                    Text(
-                                                        formatter.format(
-                                                            item.amount
-                                                        ),
-                                                        color = accent,
-                                                        fontSize = 19.sp
-                                                    )
-
-                                                    TextButton(
-                                                        onClick = {
-                                                            val index =
-                                                                payments.indexOf(
-                                                                    item
-                                                                )
-
-                                                            if (index >= 0) {
-                                                                payments =
-                                                                    payments
-                                                                        .toMutableList()
-                                                                        .also {
-                                                                            it.removeAt(
-                                                                                index
-                                                                            )
-                                                                        }
-                                                                savePayments()
-                                                            }
-                                                        }
-                                                    ) {
-                                                        Text("Удалить")
-                                                    }
-                                                }
-                                        }
-                                    }
-
-                                    3 -> {
-                                        OrganizerScreen(
-                                            this@MainActivity
-                                        )
-                                    }
-
-                                    4 -> {
-                                        AppPanel("ЛИЧНЫЕ ДАННЫЕ") {
-                                            AppField(
-                                                "Имя",
-                                                name
-                                            ) {
-                                                name = it
-                                                save()
-                                            }
-                                        }
-
-                                        AppPanel("ГРАФИК ВАХТ") {
-                                            AppDateField(
-                                                "Дата заезда",
-                                                arrivalDate
-                                            ) {
-                                                arrivalDate = it
-                                                save()
-                                            }
-
-                                            AppDateField(
-                                                "Дата выезда домой",
-                                                departureDate
-                                            ) {
-                                                departureDate = it
-                                                save()
-                                            }
-
-                                            AppField(
-                                                "Интервал между заездами, месяцев",
-                                                interval,
-                                                true
-                                            ) {
-                                                interval = it
-                                                save()
-                                            }
-
-                                            Text(
-                                                "Заезд и выезд выбираются отдельно. Повторение графика рассчитывается по календарным месяцам.",
-                                                color = muted,
-                                                fontSize = 12.sp
-                                            )
-
-                                            if (!validSchedule) {
-                                                Text(
-                                                    "Проверь даты: выезд должен быть позже заезда и раньше следующего заезда.",
-                                                    color = orange,
-                                                    fontSize = 12.sp
-                                                )
-                                            }
-                                        }
-
-                                        AppPanel("ЗАРАБОТНАЯ ПЛАТА") {
-                                            AppField(
-                                                "ЧТС, ₽/час",
-                                                rate,
-                                                true
-                                            ) {
-                                                rate = it
-                                                save()
-                                            }
-
-                                            AppField(
-                                                "Часов в смене",
-                                                hours,
-                                                true
-                                            ) {
-                                                hours = it
-                                                save()
-                                            }
-
-                                            AppField(
-                                                "Районный коэффициент",
-                                                coefficient,
-                                                true
-                                            ) {
-                                                coefficient = it
-                                                save()
-                                            }
-
-                                            AppField(
-                                                "Надбавки и премии, %",
-                                                bonus,
-                                                true
-                                            ) {
-                                                bonus = it
-                                                save()
-                                            }
-
-                                            AppField(
-                                                "НДФЛ, %",
-                                                tax,
-                                                true
-                                            ) {
-                                                tax = it
-                                                save()
-                                            }
-                                        }
-
-                                        AppPanel("ВЫПЛАТЫ") {
-                                            AppField(
-                                                "Число аванса",
-                                                advance,
-                                                true
-                                            ) {
-                                                advance = it
-                                                save()
-                                            }
-
-                                            AppField(
-                                                "Число зарплаты",
-                                                salary,
-                                                true
-                                            ) {
-                                                salary = it
-                                                save()
-                                            }
-
-                                            Text(
-                                                "Порядок расчёта аванса",
-                                                color = muted
-                                            )
-
-                                            listOf(
-                                                "По отработанным часам",
-                                                "Фиксированная сумма",
-                                                "Другой порядок"
-                                            ).forEach { option ->
-                                                Row(
-                                                    Modifier
-                                                        .fillMaxWidth()
-                                                        .clickable {
-                                                            advanceRule = option
-                                                            save()
-                                                        },
-                                                    verticalAlignment =
-                                                        Alignment.CenterVertically
-                                                ) {
-                                                    RadioButton(
-                                                        selected =
-                                                            advanceRule == option,
-                                                        onClick = {
-                                                            advanceRule = option
-                                                            save()
-                                                        }
-                                                    )
-
-                                                    Text(
-                                                        option,
-                                                        color = Color.White
-                                                    )
-                                                }
-                                            }
-
-                                            if (
-                                                advanceRule ==
-                                                "Фиксированная сумма"
-                                            ) {
-                                                AppField(
-                                                    "Сумма аванса, ₽",
-                                                    fixedAdvance,
-                                                    true
-                                                ) {
-                                                    fixedAdvance = it
-                                                    save()
-                                                }
-                                            }
-
-                                            AppField(
-                                                "Межвахтовые выплаты, ₽",
-                                                intershift,
-                                                true
-                                            ) {
-                                                intershift = it
-                                                save()
-                                            }
-
-                                            AppField(
-                                                "Дополнительные условия",
-                                                payNotes
-                                            ) {
-                                                payNotes = it
-                                                save()
-                                            }
-                                        }
-
-                                        AppPanel("БЕЗОПАСНОСТЬ") {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    unlocked = false
-                                                },
-                                                modifier =
-                                                    Modifier.fillMaxWidth()
-                                            ) {
-                                                Text(
-                                                    "Заблокировать приложение"
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            NavigationBar(
-                                containerColor = panel
-                            ) {
-                                listOf(
-                                    "Главная",
-                                    "Календарь",
-                                    "Финансы",
-                                    "Мои дела",
-                                    "Настройки"
-                                ).forEachIndexed { index, label ->
-                                    NavigationBarItem(
-                                        selected = tab == index,
-                                        onClick = {
-                                            tab = index
-                                        },
-                                        icon = {
-                                            Text(
-                                                listOf(
-                                                    "⌂", "▦", "₽", "☑", "⚙"
-                                                )[index]
-                                            )
-                                        },
-                                        label = {
-                                            Text(
-                                                label,
-                                                fontSize = 9.sp,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SetupWizard(
-    onFinish: (List<String>) -> Unit
-) {
-    var step by remember {
-        mutableIntStateOf(0)
-    }
-
-    var name by remember { mutableStateOf("") }
-    var arrival by remember { mutableStateOf("") }
-    var departure by remember { mutableStateOf("") }
-    var interval by remember { mutableStateOf("3") }
-
-    var rate by remember { mutableStateOf("") }
-    var hours by remember { mutableStateOf("") }
-    var coefficient by remember { mutableStateOf("1") }
-    var bonus by remember { mutableStateOf("0") }
-    var tax by remember { mutableStateOf("13") }
-
-    var advance by remember { mutableStateOf("") }
-    var salary by remember { mutableStateOf("") }
-
-    var rule by remember {
-        mutableStateOf("По отработанным часам")
-    }
-
-    var fixed by remember { mutableStateOf("") }
-    var intershift by remember { mutableStateOf("") }
-    var notes by remember { mutableStateOf("") }
-
-    val first = parseDate(arrival)
-    val last = parseDate(departure)
-    val months = interval.toIntOrNull()
-
-    val valid = when (step) {
-        0 -> name.trim().isNotEmpty()
-
-        1 -> first != null &&
-            last != null &&
-            last.isAfter(first) &&
-            months != null &&
-            months in 1..24 &&
-            last.isBefore(
-                monthlyDate(first, months)
-            )
-
-        2 -> number(rate) > 0 &&
-            number(hours) > 0 &&
-            number(hours) <= 24 &&
-            number(coefficient) > 0 &&
-            number(tax) <= 100
-
-        3 -> {
-            val a = advance.toIntOrNull()
-            val s = salary.toIntOrNull()
-
-            a != null && a in 1..31 &&
-                s != null && s in 1..31 &&
-                (
-                    rule != "Фиксированная сумма" ||
-                    number(fixed) > 0
-                )
-        }
-
-        else -> true
-    }
-
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = accent,
-            background = bg,
-            surface = panel,
-            onSurface = Color.White,
-            onBackground = Color.White
-        )
-    ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(bg)
-                .padding(20.dp)
-        ) {
-            Text(
-                "ВАХТА",
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Black,
-                color = Color.White
-            )
-
-            Text(
-                "ПЕРВОНАЧАЛЬНАЯ НАСТРОЙКА",
-                color = accent,
-                fontSize = 11.sp,
-                letterSpacing = 2.sp
-            )
-
-            Spacer(Modifier.height(20.dp))
-
-            LinearProgressIndicator(
-                progress = { (step + 1) / 5f },
-                modifier = Modifier.fillMaxWidth(),
-                color = accent
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            Text(
-                "Шаг ${step + 1} из 5",
-                color = muted
-            )
-
-            Spacer(Modifier.height(18.dp))
-
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(
-                        rememberScrollState()
-                    ),
-                verticalArrangement =
-                    Arrangement.spacedBy(14.dp)
-            ) {
-                when (step) {
-                    0 -> {
-                        WizardTitle(
-                            "Давай знакомиться",
-                            "Как тебя зовут?"
-                        )
-
-                        AppField(
-                            "Твоё имя",
-                            name
-                        ) {
-                            name = it
-                        }
-                    }
-
-                    1 -> {
-                        WizardTitle(
-                            "Твой график",
-                            "Выбери две реальные даты в календаре."
-                        )
-
-                        AppDateField(
-                            "Дата заезда на вахту",
-                            arrival
-                        ) {
-                            arrival = it
-                        }
-
-                        AppDateField(
-                            "Дата выезда домой",
-                            departure
-                        ) {
-                            departure = it
-                        }
-
-                        AppField(
-                            "Интервал между заездами, месяцев",
-                            interval,
-                            true
-                        ) {
-                            interval = it
-                        }
-
-                        if (first != null && last != null) {
-                            if (last.isAfter(first)) {
-                                val days =
-                                    ChronoUnit.DAYS.between(
-                                        first, last
-                                    ) + 1
-
-                                Text(
-                                    "Продолжительность вахты: $days дн.",
-                                    color = accent
-                                )
-                            } else {
-                                Text(
-                                    "Выезд должен быть позже заезда.",
-                                    color = orange
-                                )
-                            }
-                        }
-
-                        Text(
-                            "Даты не заданы заранее. Каждый пользователь выбирает свой график.",
-                            color = muted,
-                            fontSize = 12.sp
-                        )
-                    }
-
-                    2 -> {
-                        WizardTitle(
-                            "Работа и заработок",
-                            "Заполни параметры начисления зарплаты."
-                        )
-
-                        AppField(
-                            "ЧТС, ₽/час",
-                            rate,
-                            true
-                        ) {
-                            rate = it
-                        }
-
-                        AppField(
-                            "Часов в смене",
-                            hours,
-                            true
-                        ) {
-                            hours = it
-                        }
-
-                        AppField(
-                            "Районный коэффициент",
-                            coefficient,
-                            true
-                        ) {
-                            coefficient = it
-                        }
-
-                        AppField(
-                            "Надбавки и премии, %",
-                            bonus,
-                            true
-                        ) {
-                            bonus = it
-                        }
-
-                        AppField(
-                            "НДФЛ, %",
-                            tax,
-                            true
-                        ) {
-                            tax = it
-                        }
-                    }
-
-                    3 -> {
-                        WizardTitle(
-                            "Даты выплат",
-                            "Когда и по каким правилам приходят деньги?"
-                        )
-
-                        AppField(
-                            "Число аванса",
-                            advance,
-                            true
-                        ) {
-                            advance = it
-                        }
-
-                        AppField(
-                            "Число зарплаты",
-                            salary,
-                            true
-                        ) {
-                            salary = it
-                        }
-
-                        Text(
-                            "Порядок расчёта аванса",
-                            color = muted
-                        )
-
-                        listOf(
-                            "По отработанным часам",
-                            "Фиксированная сумма",
-                            "Другой порядок"
-                        ).forEach { option ->
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        rule = option
-                                    },
-                                verticalAlignment =
-                                    Alignment.CenterVertically
-                            ) {
-                                RadioButton(
-                                    selected = rule == option,
-                                    onClick = {
-                                        rule = option
-                                    }
-                                )
-
-                                Text(
-                                    option,
-                                    color = Color.White
-                                )
-                            }
-                        }
-
-                        if (
-                            rule == "Фиксированная сумма"
-                        ) {
-                            AppField(
-                                "Сумма аванса, ₽",
-                                fixed,
-                                true
-                            ) {
-                                fixed = it
-                            }
-                        }
-
-                        AppField(
-                            "Межвахтовые выплаты, ₽",
-                            intershift,
-                            true
-                        ) {
-                            intershift = it
-                        }
-
-                        AppField(
-                            "Дополнительные условия начислений",
-                            notes
-                        ) {
-                            notes = it
-                        }
-                    }
-
-                    4 -> {
-                        WizardTitle(
-                            "Проверь настройки",
-                            "Всё можно изменить позже."
-                        )
-
-                        AppPanel("ЛИЧНЫЕ ДАННЫЕ") {
-                            Text(
-                                "Имя: $name",
-                                color = Color.White
-                            )
-
-                            Text(
-                                "Заезд: ${first?.pretty() ?: "—"}",
-                                color = accent
-                            )
-
-                            Text(
-                                "Выезд домой: ${last?.pretty() ?: "—"} 🎉",
-                                color = orange
-                            )
-
-                            Text(
-                                "Интервал: $interval мес.",
-                                color = muted
-                            )
-
-                            Text(
-                                "ЧТС: $rate ₽/час",
-                                color = muted
-                            )
-
-                            Text(
-                                "Часов в смене: $hours",
-                                color = muted
-                            )
-
-                            Text(
-                                "Аванс: $advance числа",
-                                color = muted
-                            )
-
-                            Text(
-                                "Зарплата: $salary числа",
-                                color = muted
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement =
-                    Arrangement.spacedBy(12.dp)
-            ) {
-                if (step > 0) {
-                    OutlinedButton(
-                        onClick = {
-                            step--
+                    MainApp(
+                        settings = settings,
+                        onSettingsChange = {
+                            settings = it
+                            saveSettings(preferences, it)
                         },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Назад")
-                    }
-                }
-
-                Button(
-                    onClick = {
-                        if (step < 4) {
-                            step++
-                        } else {
-                            onFinish(
-                                listOf(
-                                    name.trim(),
-                                    arrival,
-                                    departure,
-                                    interval,
-                                    rate,
-                                    hours,
-                                    coefficient,
-                                    bonus,
-                                    tax,
-                                    advance,
-                                    salary,
-                                    rule,
-                                    fixed,
-                                    intershift,
-                                    notes
-                                )
-                            )
-                        }
-                    },
-                    enabled = valid,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        if (step == 4)
-                            "Начать работу"
-                        else "Продолжить"
+                        preferences = preferences,
+                        onLock = { unlocked = false },
+                        organizerContext = this@MainActivity
                     )
                 }
             }
@@ -1515,184 +326,1062 @@ private fun SetupWizard(
 }
 
 @Composable
-private fun WizardTitle(
-    title: String,
-    description: String
+private fun AppTheme(
+    content: @Composable () -> Unit
 ) {
-    Text(
-        title,
-        color = Color.White,
-        fontSize = 26.sp,
-        fontWeight = FontWeight.Bold
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            primary = mint,
+            background = navy,
+            surface = surface,
+            onBackground = Color.White,
+            onSurface = Color.White
+        ),
+        content = content
     )
+}
 
-    Text(
-        description,
-        color = muted,
-        fontSize = 14.sp
-    )
+@Composable
+private fun SetupWizard(
+    initial: Settings,
+    onFinish: (Settings) -> Unit
+) {
+    var s by remember { mutableStateOf(initial) }
+    var step by remember { mutableIntStateOf(0) }
+
+    val arrival = parseDate(s.arrival)
+    val departure = parseDate(s.departure)
+    val interval = s.interval.toIntOrNull()
+
+    val scheduleValid =
+        arrival != null &&
+        departure != null &&
+        interval != null &&
+        interval in 1..24 &&
+        departure.isAfter(arrival) &&
+        departure.isBefore(shiftedDate(arrival, interval.toLong()))
+
+    val valid = when (step) {
+        0 -> s.name.trim().isNotBlank()
+        1 -> scheduleValid
+        2 -> decimal(s.hourly) > 0 &&
+            decimal(s.hours) in 0.01..24.0 &&
+            s.workDays.toIntOrNull() in 1..31 &&
+            s.restDays.toIntOrNull() in 0..31
+        3 -> true
+        4 -> true
+        5 -> s.advanceDay.toIntOrNull() in 1..31 &&
+            s.salaryDay.toIntOrNull() in 1..31 &&
+            (
+                s.advanceMethod != "Фиксированная сумма" ||
+                decimal(s.fixedAdvance) > 0
+            )
+        else -> true
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(navy)
+            .padding(18.dp)
+    ) {
+        Text(
+            "ВАХТА",
+            fontSize = 31.sp,
+            color = Color.White,
+            fontWeight = FontWeight.Black
+        )
+        Text(
+            "НАСТРОЙКА ПРИЛОЖЕНИЯ",
+            color = mint,
+            fontSize = 11.sp,
+            letterSpacing = 2.sp
+        )
+
+        Spacer(Modifier.height(20.dp))
+
+        LinearProgressIndicator(
+            progress = { (step + 1) / 7f },
+            modifier = Modifier.fillMaxWidth(),
+            color = mint
+        )
+
+        Spacer(Modifier.height(10.dp))
+        Text("Шаг ${step + 1} из 7", color = secondary)
+        Spacer(Modifier.height(18.dp))
+
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(13.dp)
+        ) {
+            when (step) {
+                0 -> {
+                    StepTitle(
+                        "Давай знакомиться",
+                        "Как к тебе обращаться?"
+                    )
+                    Field("Имя", s.name) {
+                        s = s.copy(name = it)
+                    }
+                }
+
+                1 -> {
+                    StepTitle(
+                        "График вахт",
+                        "Выбери реальные даты заезда и выезда. Никакие даты не установлены за тебя."
+                    )
+                    DateField("Дата заезда", s.arrival) {
+                        s = s.copy(arrival = it)
+                    }
+                    DateField("Дата выезда домой", s.departure) {
+                        s = s.copy(departure = it)
+                    }
+                    Field(
+                        "Интервал между заездами, месяцев",
+                        s.interval,
+                        true
+                    ) {
+                        s = s.copy(interval = it)
+                    }
+
+                    if (arrival != null && departure != null) {
+                        val days = ChronoUnit.DAYS.between(
+                            arrival, departure
+                        ) + 1
+                        Text(
+                            if (days > 0)
+                                "Продолжительность первой вахты: $days дней"
+                            else
+                                "Дата выезда должна быть позже даты заезда",
+                            color = if (days > 0) mint else gold
+                        )
+                    }
+
+                    Text(
+                        "Например, при интервале 3 месяца следующий заезд рассчитывается через 3 календарных месяца. Можно выбрать другое значение.",
+                        color = secondary,
+                        fontSize = 12.sp
+                    )
+                }
+
+                2 -> {
+                    StepTitle(
+                        "Рабочее время",
+                        "Укажи свой режим работы и часовую ставку."
+                    )
+                    Field("ЧТС, ₽/час", s.hourly, true) {
+                        s = s.copy(hourly = it)
+                    }
+                    Field("Часов в смене", s.hours, true) {
+                        s = s.copy(hours = it)
+                    }
+                    Field(
+                        "Рабочих дней подряд",
+                        s.workDays,
+                        true
+                    ) {
+                        s = s.copy(workDays = it)
+                    }
+                    Field(
+                        "Выходных дней подряд",
+                        s.restDays,
+                        true
+                    ) {
+                        s = s.copy(restDays = it)
+                    }
+                    Text(
+                        "Если выходных нет, укажи 0. Расчётный счётчик использует этот график.",
+                        color = secondary,
+                        fontSize = 12.sp
+                    )
+                }
+
+                3 -> {
+                    StepTitle(
+                        "Надбавки и премии",
+                        "Заполни только те начисления, которые применяются у тебя."
+                    )
+                    Field(
+                        "Районный коэффициент, например 1,2",
+                        s.coefficient,
+                        true
+                    ) {
+                        s = s.copy(coefficient = it)
+                    }
+                    Field(
+                        "Северная надбавка, %",
+                        s.north,
+                        true
+                    ) {
+                        s = s.copy(north = it)
+                    }
+                    Field(
+                        "Производственная премия, %",
+                        s.premium,
+                        true
+                    ) {
+                        s = s.copy(premium = it)
+                    }
+                    Field(
+                        "Вахтовая надбавка, ₽/день",
+                        s.shiftAllowance,
+                        true
+                    ) {
+                        s = s.copy(shiftAllowance = it)
+                    }
+                    Field(
+                        "Оплачиваемых часов дороги за вахту",
+                        s.travelHours,
+                        true
+                    ) {
+                        s = s.copy(travelHours = it)
+                    }
+                }
+
+                4 -> {
+                    StepTitle(
+                        "Межвахта и удержания",
+                        "Необязательные параметры можно оставить пустыми."
+                    )
+                    Field(
+                        "Оплачиваемых часов межвахты",
+                        s.intershiftHours,
+                        true
+                    ) {
+                        s = s.copy(intershiftHours = it)
+                    }
+                    Field(
+                        "Ставка оплаты межвахты, ₽/час",
+                        s.intershiftRate,
+                        true
+                    ) {
+                        s = s.copy(intershiftRate = it)
+                    }
+                    Field("НДФЛ, %", s.tax, true) {
+                        s = s.copy(tax = it)
+                    }
+                    Field(
+                        "Удержание за питание, ₽",
+                        s.meals,
+                        true
+                    ) {
+                        s = s.copy(meals = it)
+                    }
+                    Field(
+                        "Исполнительные удержания, ₽",
+                        s.enforcement,
+                        true
+                    ) {
+                        s = s.copy(enforcement = it)
+                    }
+                    Field(
+                        "Другие удержания, ₽",
+                        s.otherDeductions,
+                        true
+                    ) {
+                        s = s.copy(otherDeductions = it)
+                    }
+                }
+
+                5 -> {
+                    StepTitle(
+                        "Выплата зарплаты",
+                        "Укажи свои даты аванса и окончательного расчёта."
+                    )
+                    Field(
+                        "Число аванса",
+                        s.advanceDay,
+                        true
+                    ) {
+                        s = s.copy(advanceDay = it)
+                    }
+                    Field(
+                        "Число зарплаты",
+                        s.salaryDay,
+                        true
+                    ) {
+                        s = s.copy(salaryDay = it)
+                    }
+
+                    Text(
+                        "Как рассчитывается аванс?",
+                        color = Color.White
+                    )
+                    listOf(
+                        "По отработанным часам",
+                        "Фиксированная сумма",
+                        "Другой порядок"
+                    ).forEach { method ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    s = s.copy(advanceMethod = method)
+                                },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = s.advanceMethod == method,
+                                onClick = {
+                                    s = s.copy(advanceMethod = method)
+                                }
+                            )
+                            Text(method, color = Color.White)
+                        }
+                    }
+
+                    if (s.advanceMethod == "Фиксированная сумма") {
+                        Field(
+                            "Сумма аванса, ₽",
+                            s.fixedAdvance,
+                            true
+                        ) {
+                            s = s.copy(fixedAdvance = it)
+                        }
+                    }
+
+                    Field(
+                        "Другие особенности расчёта",
+                        s.notes
+                    ) {
+                        s = s.copy(notes = it)
+                    }
+                }
+
+                6 -> {
+                    StepTitle(
+                        "Всё готово",
+                        "Проверь основные данные. Их всегда можно изменить."
+                    )
+                    Panel("ТВОИ НАСТРОЙКИ") {
+                        Info("Имя", s.name)
+                        Info("Заезд", arrival?.display() ?: "—")
+                        Info("Выезд", departure?.display() ?: "—")
+                        Info("Интервал", "${s.interval} мес.")
+                        Info("ЧТС", "${s.hourly} ₽/час")
+                        Info("Смена", "${s.hours} часов")
+                        Info(
+                            "Работа / отдых",
+                            "${s.workDays} / ${s.restDays} дней"
+                        )
+                        Info("Аванс", "${s.advanceDay} числа")
+                        Info("Зарплата", "${s.salaryDay} числа")
+                    }
+                    Text(
+                        "Личные данные хранятся в настройках приложения. Незаполненные необязательные начисления не учитываются.",
+                        color = secondary,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (step > 0) {
+                OutlinedButton(
+                    onClick = { step-- },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Назад")
+                }
+            }
+
+            Button(
+                onClick = {
+                    if (step < 6) step++
+                    else onFinish(s)
+                },
+                enabled = valid,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    if (step == 6) "Начать работу"
+                    else "Продолжить"
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MainApp(
+    settings: Settings,
+    onSettingsChange: (Settings) -> Unit,
+    preferences: SharedPreferences,
+    onLock: () -> Unit,
+    organizerContext: Context
+) {
+    var tab by remember { mutableIntStateOf(0) }
+    var tick by remember {
+        mutableLongStateOf(System.currentTimeMillis())
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            tick = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
+    val now = remember(tick / 1000) {
+        LocalDateTime.now()
+    }
+    val today = now.toLocalDate()
+
+    val arrival = parseDate(settings.arrival)
+    val departure = parseDate(settings.departure)
+    val months = settings.interval.toIntOrNull()
+
+    val valid =
+        arrival != null &&
+        departure != null &&
+        months != null &&
+        months in 1..24 &&
+        departure.isAfter(arrival) &&
+        departure.isBefore(
+            shiftedDate(arrival, months.toLong())
+        )
+
+    val period = if (valid) {
+        periodFor(today, arrival!!, departure!!, months!!)
+    } else null
+
+    val hourly = decimal(settings.hourly)
+    val hours = decimal(settings.hours)
+    val coefficient = decimal(settings.coefficient)
+        .takeIf { it > 0 } ?: 1.0
+
+    val workDays = (
+        settings.workDays.toIntOrNull() ?: 1
+    ).coerceIn(1, 31)
+    val restDays = (
+        settings.restDays.toIntOrNull() ?: 0
+    ).coerceIn(0, 31)
+
+    val north = decimal(settings.north) / 100.0
+    val premium = decimal(settings.premium) / 100.0
+
+    val earnings = if (period == null) {
+        0.0
+    } else {
+        val daysInShift = (
+            ChronoUnit.DAYS.between(
+                period.start,
+                period.end
+            ) + 1
+        ).coerceAtLeast(0)
+
+        val completed = if (period.atWork) {
+            ChronoUnit.DAYS.between(
+                period.start,
+                today
+            ).coerceIn(0, daysInShift)
+        } else {
+            daysInShift
+        }
+
+        val cycle = workDays + restDays
+
+        fun worked(dayIndex: Long): Boolean =
+            (dayIndex % cycle) < workDays
+
+        var workedDays = 0L
+        for (i in 0 until completed) {
+            if (worked(i)) workedDays++
+        }
+
+        val fraction = if (
+            period.atWork &&
+            worked(completed) &&
+            completed < daysInShift
+        ) {
+            now.toLocalTime().toSecondOfDay() / 86400.0
+        } else 0.0
+
+        val estimatedHours =
+            (workedDays + fraction) * hours
+
+        val base = estimatedHours * hourly
+
+        val shiftDaysElapsed =
+            completed + if (period.atWork) fraction else 0.0
+
+        base * (coefficient + north + premium) +
+            shiftDaysElapsed * decimal(settings.shiftAllowance)
+    }
+
+    var payments by remember {
+        mutableStateOf(
+            readPayments(
+                preferences.getString("payments", "[]") ?: "[]"
+            )
+        )
+    }
+
+    fun persistPayments(items: List<Payment>) {
+        payments = items
+        preferences.edit()
+            .putString("payments", writePayments(items))
+            .apply()
+    }
+
+    Column(
+        Modifier.fillMaxSize().background(navy)
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .then(
+                    if (tab == 3) Modifier
+                    else Modifier.verticalScroll(rememberScrollState())
+                )
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                "ВАХТА",
+                color = Color.White,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.Black
+            )
+            Text(
+                if (settings.name.isBlank()) "Добро пожаловать"
+                else "Привет, ${settings.name}!",
+                color = secondary,
+                fontSize = 17.sp
+            )
+
+            when (tab) {
+                0 -> {
+                    Panel("МОЙ ГРАФИК") {
+                        if (period == null) {
+                            Text(
+                                "Настрой даты заезда и выезда",
+                                color = gold
+                            )
+                            Button(onClick = { tab = 4 }) {
+                                Text("Открыть настройки")
+                            }
+                        } else {
+                            Text(
+                                if (period.atWork) "НА ВАХТЕ"
+                                else "НА МЕЖВАХТЕ",
+                                color = if (period.atWork) mint else blue,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Text(
+                                if (period.atWork)
+                                    "До выезда: ${period.remaining} дн."
+                                else
+                                    "До заезда: ${period.remaining} дн.",
+                                color = Color.White,
+                                fontSize = 23.sp
+                            )
+
+                            LinearProgressIndicator(
+                                progress = { period.progress },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(10.dp),
+                                color = if (period.atWork) mint else blue,
+                                trackColor = Color(0xFF354C65)
+                            )
+
+                            Info(
+                                "Прогресс",
+                                "${(period.progress * 100).toInt()}% из ${period.total} дней"
+                            )
+                            Info("Заезд", period.start.display())
+                            Info("Выезд 🎉", period.end.display())
+                            Info(
+                                "Следующий заезд",
+                                period.nextStart.display()
+                            )
+                        }
+                    }
+
+                    Panel("ЖИВОЙ СЧЁТЧИК") {
+                        Text(
+                            rubles(earnings),
+                            color = mint,
+                            fontSize = 29.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            if (period?.atWork == true)
+                                "Расчёт обновляется каждую секунду"
+                            else
+                                "На межвахте счётчик остановлен",
+                            color = secondary
+                        )
+                        Text(
+                            "Ориентировочное начисление по графику, а не подтверждённая сумма к выплате. Время смен распределено условно в пределах суток.",
+                            color = secondary,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Panel("БЛИЖАЙШАЯ ВЫПЛАТА") {
+                        val options = listOfNotNull(
+                            nextPayDate(
+                                today,
+                                settings.advanceDay
+                            )?.let { "Аванс" to it },
+                            nextPayDate(
+                                today,
+                                settings.salaryDay
+                            )?.let { "Зарплата" to it }
+                        )
+                        val nearest = options.minByOrNull {
+                            it.second
+                        }
+                        Text(
+                            nearest?.let {
+                                "${it.first} · ${it.second.display()}"
+                            } ?: "Даты выплат не настроены",
+                            color = Color.White,
+                            fontSize = 19.sp
+                        )
+                        Text(
+                            "Прогноз суммы требует подтверждения расчётного периода и порядка удержаний.",
+                            color = secondary,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+
+                1 -> {
+                    if (valid) {
+                        ShiftCalendar(
+                            today = today,
+                            arrival = arrival!!,
+                            departure = departure!!,
+                            interval = months!!
+                        )
+                    } else {
+                        Panel("КАЛЕНДАРЬ") {
+                            Text(
+                                "Сначала настрой даты вахты",
+                                color = secondary
+                            )
+                        }
+                    }
+                }
+
+                2 -> FinanceScreen(
+                    earnings = earnings,
+                    payments = payments,
+                    onPaymentsChange = ::persistPayments
+                )
+
+                3 -> OrganizerScreen(organizerContext)
+
+                4 -> SettingsScreen(
+                    s = settings,
+                    onChange = onSettingsChange,
+                    onLock = onLock
+                )
+            }
+        }
+
+        NavigationBar(containerColor = surface) {
+            listOf(
+                "Главная",
+                "Календарь",
+                "Финансы",
+                "Мои дела",
+                "Настройки"
+            ).forEachIndexed { index, label ->
+                NavigationBarItem(
+                    selected = tab == index,
+                    onClick = { tab = index },
+                    icon = {
+                        Text(
+                            listOf("⌂", "▦", "₽", "☑", "⚙")[index]
+                        )
+                    },
+                    label = {
+                        Text(
+                            label,
+                            fontSize = 9.sp,
+                            maxLines = 1
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
+private fun nextPayDate(
+    today: LocalDate,
+    value: String
+): LocalDate? {
+    val day = value.toIntOrNull()
+        ?.takeIf { it in 1..31 } ?: return null
+
+    fun inMonth(month: YearMonth) =
+        month.atDay(day.coerceAtMost(month.lengthOfMonth()))
+
+    val current = inMonth(YearMonth.from(today))
+    return if (current.isBefore(today)) {
+        inMonth(YearMonth.from(today).plusMonths(1))
+    } else current
+}
+
+@Composable
+private fun FinanceScreen(
+    earnings: Double,
+    payments: List<Payment>,
+    onPaymentsChange: (List<Payment>) -> Unit
+) {
+    var date by remember {
+        mutableStateOf(LocalDate.now().toString())
+    }
+    var amount by remember { mutableStateOf("") }
+    var type by remember { mutableStateOf("Зарплата") }
+
+    Panel("РАСЧЁТНЫЕ НАЧИСЛЕНИЯ") {
+        Text(
+            rubles(earnings),
+            color = mint,
+            fontSize = 25.sp
+        )
+        Text(
+            "Предварительная оценка, не сумма к получению",
+            color = secondary,
+            fontSize = 12.sp
+        )
+    }
+
+    Panel("ДОБАВИТЬ ВЫПЛАТУ") {
+        DateField("Дата получения", date) {
+            date = it
+        }
+        Field("Получено, ₽", amount, true) {
+            amount = it
+        }
+
+        listOf(
+            "Зарплата",
+            "Аванс",
+            "Межвахта",
+            "Смешанная",
+            "Отпускные",
+            "Другое"
+        ).forEach { option ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { type = option },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = type == option,
+                    onClick = { type = option }
+                )
+                Text(option, color = Color.White)
+            }
+        }
+
+        Button(
+            onClick = {
+                onPaymentsChange(
+                    payments + Payment(
+                        date,
+                        decimal(amount),
+                        type
+                    )
+                )
+                amount = ""
+            },
+            enabled = decimal(amount) > 0 &&
+                parseDate(date) != null,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Сохранить выплату")
+        }
+    }
+
+    Panel("ИСТОРИЯ ВЫПЛАТ") {
+        Text(
+            "Всего получено: ${
+                rubles(payments.sumOf { it.amount })
+            }",
+            color = mint
+        )
+
+        if (payments.isEmpty()) {
+            Text("Записей пока нет", color = secondary)
+        }
+
+        payments.sortedByDescending { it.date }
+            .forEach { item ->
+                HorizontalDivider()
+                Text(
+                    "${item.date} · ${item.type}",
+                    color = secondary
+                )
+                Text(
+                    rubles(item.amount),
+                    color = mint,
+                    fontSize = 19.sp
+                )
+                TextButton(
+                    onClick = {
+                        val index = payments.indexOf(item)
+                        if (index >= 0) {
+                            onPaymentsChange(
+                                payments.toMutableList().also {
+                                    it.removeAt(index)
+                                }
+                            )
+                        }
+                    }
+                ) {
+                    Text("Удалить")
+                }
+            }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    s: Settings,
+    onChange: (Settings) -> Unit,
+    onLock: () -> Unit
+) {
+    Panel("ЛИЧНЫЕ ДАННЫЕ") {
+        Field("Имя", s.name) {
+            onChange(s.copy(name = it))
+        }
+    }
+
+    Panel("ГРАФИК ВАХТ") {
+        DateField("Дата заезда", s.arrival) {
+            onChange(s.copy(arrival = it))
+        }
+        DateField("Дата выезда", s.departure) {
+            onChange(s.copy(departure = it))
+        }
+        Field(
+            "Интервал между заездами, месяцев",
+            s.interval,
+            true
+        ) {
+            onChange(s.copy(interval = it))
+        }
+        Field("Рабочих дней подряд", s.workDays, true) {
+            onChange(s.copy(workDays = it))
+        }
+        Field("Выходных дней подряд", s.restDays, true) {
+            onChange(s.copy(restDays = it))
+        }
+    }
+
+    Panel("ОПЛАТА ТРУДА") {
+        Field("ЧТС, ₽/час", s.hourly, true) {
+            onChange(s.copy(hourly = it))
+        }
+        Field("Часов в смене", s.hours, true) {
+            onChange(s.copy(hours = it))
+        }
+        Field("Районный коэффициент", s.coefficient, true) {
+            onChange(s.copy(coefficient = it))
+        }
+        Field("Северная надбавка, %", s.north, true) {
+            onChange(s.copy(north = it))
+        }
+        Field("Производственная премия, %", s.premium, true) {
+            onChange(s.copy(premium = it))
+        }
+        Field(
+            "Вахтовая надбавка, ₽/день",
+            s.shiftAllowance,
+            true
+        ) {
+            onChange(s.copy(shiftAllowance = it))
+        }
+        Field("Оплачиваемых часов дороги", s.travelHours, true) {
+            onChange(s.copy(travelHours = it))
+        }
+        Field(
+            "Оплачиваемых часов межвахты",
+            s.intershiftHours,
+            true
+        ) {
+            onChange(s.copy(intershiftHours = it))
+        }
+        Field(
+            "Ставка межвахты, ₽/час",
+            s.intershiftRate,
+            true
+        ) {
+            onChange(s.copy(intershiftRate = it))
+        }
+    }
+
+    Panel("УДЕРЖАНИЯ") {
+        Field("НДФЛ, %", s.tax, true) {
+            onChange(s.copy(tax = it))
+        }
+        Field("Питание, ₽", s.meals, true) {
+            onChange(s.copy(meals = it))
+        }
+        Field("Исполнительные удержания, ₽", s.enforcement, true) {
+            onChange(s.copy(enforcement = it))
+        }
+        Field(
+            "Прочие удержания, ₽",
+            s.otherDeductions,
+            true
+        ) {
+            onChange(s.copy(otherDeductions = it))
+        }
+    }
+
+    Panel("ДАТЫ ВЫПЛАТ") {
+        Field("Число аванса", s.advanceDay, true) {
+            onChange(s.copy(advanceDay = it))
+        }
+        Field("Число зарплаты", s.salaryDay, true) {
+            onChange(s.copy(salaryDay = it))
+        }
+
+        listOf(
+            "По отработанным часам",
+            "Фиксированная сумма",
+            "Другой порядок"
+        ).forEach { method ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        onChange(s.copy(advanceMethod = method))
+                    },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = s.advanceMethod == method,
+                    onClick = {
+                        onChange(s.copy(advanceMethod = method))
+                    }
+                )
+                Text(method, color = Color.White)
+            }
+        }
+
+        if (s.advanceMethod == "Фиксированная сумма") {
+            Field("Сумма аванса, ₽", s.fixedAdvance, true) {
+                onChange(s.copy(fixedAdvance = it))
+            }
+        }
+
+        Field("Особенности начислений", s.notes) {
+            onChange(s.copy(notes = it))
+        }
+    }
+
+    Panel("БЕЗОПАСНОСТЬ") {
+        OutlinedButton(
+            onClick = onLock,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Заблокировать приложение")
+        }
+    }
 }
 
 @Composable
 private fun ShiftCalendar(
     today: LocalDate,
-    firstArrival: LocalDate,
-    firstDeparture: LocalDate,
-    intervalMonths: Int
+    arrival: LocalDate,
+    departure: LocalDate,
+    interval: Int
 ) {
     var month by remember {
-        mutableStateOf(
-            YearMonth.from(today)
-        )
+        mutableStateOf(YearMonth.from(today))
     }
-
     var selected by remember {
         mutableStateOf(today)
     }
 
-    AppPanel("КАЛЕНДАРЬ ВАХТ") {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.SpaceBetween,
-            verticalAlignment =
-                Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = {
-                    month = month.minusMonths(1)
-                }
-            ) {
-                Text(
-                    "‹",
-                    fontSize = 30.sp,
-                    color = accent
-                )
-            }
+    Panel("КАЛЕНДАРЬ ВАХТ") {
+        MonthHeader(
+            month = month,
+            onPrevious = { month = month.minusMonths(1) },
+            onNext = { month = month.plusMonths(1) }
+        )
 
-            Text(
-                month.format(
-                    DateTimeFormatter.ofPattern(
-                        "LLLL yyyy",
-                        ru
-                    )
-                ).replaceFirstChar {
-                    it.uppercase()
-                },
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
+        WeekHeader()
 
-            IconButton(
-                onClick = {
-                    month = month.plusMonths(1)
-                }
-            ) {
-                Text(
-                    "›",
-                    fontSize = 30.sp,
-                    color = accent
-                )
-            }
-        }
-
-        Row(
-            Modifier.fillMaxWidth()
-        ) {
-            listOf(
-                "Пн", "Вт", "Ср", "Чт",
-                "Пт", "Сб", "Вс"
-            ).forEach { day ->
-                Box(
-                    Modifier.weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        day,
-                        color = muted,
-                        fontSize = 11.sp
-                    )
-                }
-            }
-        }
-
-        val offset =
-            month.atDay(1).dayOfWeek.value - 1
-
+        val offset = month.atDay(1).dayOfWeek.value - 1
         val count = month.lengthOfMonth()
         val rows = (offset + count + 6) / 7
 
         repeat(rows) { row ->
             Row(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement =
-                    Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 repeat(7) { col ->
-                    val day =
-                        row * 7 + col - offset + 1
+                    val day = row * 7 + col - offset + 1
 
                     if (day in 1..count) {
                         val date = month.atDay(day)
-
-                        val state = calculateShift(
-                            date,
-                            firstArrival,
-                            firstDeparture,
-                            intervalMonths
+                        val p = periodFor(
+                            date, arrival, departure, interval
                         )
 
-                        val isArrival =
-                            date == state.arrival
-
-                        val isDeparture =
-                            date == state.departure
+                        val isArrival = date == p.start
+                        val isDeparture = date == p.end
 
                         val cellColor = when {
-                            isDeparture -> orange
+                            isDeparture -> gold
                             isArrival -> Color(0xFF278E7A)
-                            state.working ->
-                                Color(0xFF204F4A)
-                            else ->
-                                Color(0xFF233F65)
+                            p.atWork -> Color(0xFF204F4A)
+                            else -> Color(0xFF233F65)
                         }
 
                         Box(
-                            modifier = Modifier
+                            Modifier
                                 .weight(1f)
-                                .height(50.dp)
+                                .height(49.dp)
                                 .background(
                                     cellColor,
-                                    RoundedCornerShape(10.dp)
+                                    RoundedCornerShape(9.dp)
                                 )
                                 .then(
-                                    if (date == selected) {
+                                    if (date == selected)
                                         Modifier.border(
                                             2.dp,
                                             Color.White,
-                                            RoundedCornerShape(10.dp)
+                                            RoundedCornerShape(9.dp)
                                         )
-                                    } else Modifier
+                                    else Modifier
                                 )
-                                .clickable {
-                                    selected = date
-                                },
-                            contentAlignment =
-                                Alignment.Center
+                                .clickable { selected = date },
+                            contentAlignment = Alignment.Center
                         ) {
                             Column(
                                 horizontalAlignment =
                                     Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    day.toString(),
+                                    "$day",
                                     color = if (isDeparture)
-                                        bg else Color.White,
-                                    fontWeight =
-                                        FontWeight.Bold
+                                        navy else Color.White,
+                                    fontWeight = FontWeight.Bold
                                 )
-
                                 Text(
                                     when {
                                         isDeparture -> "🎉"
@@ -1700,65 +1389,48 @@ private fun ShiftCalendar(
                                         date == today -> "•"
                                         else -> " "
                                     },
-                                    color = accent,
-                                    fontSize = 11.sp,
-                                    lineHeight = 12.sp
+                                    fontSize = 10.sp,
+                                    lineHeight = 11.sp,
+                                    color = mint
                                 )
                             }
                         }
                     } else {
                         Spacer(
-                            Modifier
-                                .weight(1f)
-                                .height(50.dp)
+                            Modifier.weight(1f).height(49.dp)
                         )
                     }
                 }
             }
         }
 
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.SpaceBetween
-        ) {
-            Legend(accent, "Вахта")
-            Legend(blue, "Отдых")
-            Legend(orange, "Домой 🎉")
-        }
+        Info("Бирюзовый", "Вахта")
+        Info("Синий", "Межвахта")
+        Info("Золотой 🎉", "Выезд домой")
 
-        HorizontalDivider(
-            color = Color(0xFF36506B)
-        )
+        HorizontalDivider()
 
-        val state = calculateShift(
-            selected,
-            firstArrival,
-            firstDeparture,
-            intervalMonths
+        val p = periodFor(
+            selected, arrival, departure, interval
         )
 
         Text(
-            selected.pretty(),
+            selected.display(),
             color = Color.White,
-            fontSize = 19.sp,
+            fontSize = 20.sp,
             fontWeight = FontWeight.Bold
         )
 
         Text(
             when {
-                selected == state.departure ->
-                    "🎉 День выезда домой!"
-                selected == state.arrival ->
-                    "🚀 День заезда на вахту!"
-                state.working ->
-                    "На вахте. До выезда: ${state.remaining} дн."
+                selected == p.end -> "🎉 День выезда домой!"
+                selected == p.start -> "🚀 День заезда!"
+                p.atWork ->
+                    "На вахте. До выезда: ${p.remaining} дн."
                 else ->
-                    "Межвахтовый отдых. До заезда: ${state.remaining} дн."
+                    "На межвахте. До заезда: ${p.remaining} дн."
             },
-            color = if (
-                selected == state.departure
-            ) orange else accent
+            color = if (selected == p.end) gold else mint
         )
 
         OutlinedButton(
@@ -1774,159 +1446,111 @@ private fun ShiftCalendar(
 }
 
 @Composable
-private fun Legend(
-    color: Color,
-    label: String
+private fun MonthHeader(
+    month: YearMonth,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
 ) {
     Row(
-        verticalAlignment =
-            Alignment.CenterVertically,
-        horizontalArrangement =
-            Arrangement.spacedBy(5.dp)
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier
-                .size(9.dp)
-                .background(color, CircleShape)
-        )
-
+        IconButton(onClick = onPrevious) {
+            Text("‹", fontSize = 30.sp, color = mint)
+        }
         Text(
-            label,
-            color = muted,
-            fontSize = 10.sp
+            month.format(
+                DateTimeFormatter.ofPattern("LLLL yyyy", locale)
+            ).replaceFirstChar { it.uppercase() },
+            color = Color.White,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold
         )
+        IconButton(onClick = onNext) {
+            Text("›", fontSize = 30.sp, color = mint)
+        }
     }
 }
 
 @Composable
-private fun AppDateField(
+private fun WeekHeader() {
+    Row(Modifier.fillMaxWidth()) {
+        listOf(
+            "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"
+        ).forEach {
+            Text(
+                it,
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontSize = 11.sp,
+                color = secondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun DateField(
     label: String,
     value: String,
     onChange: (String) -> Unit
 ) {
-    var open by remember {
-        mutableStateOf(false)
-    }
-
-    val selectedDate = parseDate(value)
+    var open by remember { mutableStateOf(false) }
+    val selected = parseDate(value)
 
     OutlinedButton(
-        onClick = {
-            open = true
-        },
+        onClick = { open = true },
         modifier = Modifier.fillMaxWidth()
     ) {
         Text(
-            if (selectedDate == null)
-                "$label: Выбрать дату"
-            else
-                "$label: ${selectedDate.pretty()}"
+            "$label: ${selected?.display() ?: "Выбрать дату"}"
         )
     }
 
     if (open) {
         var month by remember(open) {
             mutableStateOf(
-                YearMonth.from(
-                    selectedDate ?: LocalDate.now()
-                )
+                YearMonth.from(selected ?: LocalDate.now())
             )
         }
 
         AlertDialog(
-            onDismissRequest = {
-                open = false
-            },
-            title = {
-                Text("Выберите дату")
-            },
+            onDismissRequest = { open = false },
+            title = { Text(label) },
             text = {
                 Column(
-                    verticalArrangement =
-                        Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement.SpaceBetween,
-                        verticalAlignment =
-                            Alignment.CenterVertically
-                    ) {
-                        TextButton(
-                            onClick = {
-                                month = month.minusMonths(1)
-                            }
-                        ) {
-                            Text(
-                                "‹",
-                                fontSize = 25.sp
-                            )
+                    MonthHeader(
+                        month,
+                        onPrevious = {
+                            month = month.minusMonths(1)
+                        },
+                        onNext = {
+                            month = month.plusMonths(1)
                         }
+                    )
 
-                        Text(
-                            month.format(
-                                DateTimeFormatter.ofPattern(
-                                    "LLLL yyyy",
-                                    ru
-                                )
-                            ).replaceFirstChar {
-                                it.uppercase()
-                            },
-                            color = Color.White
-                        )
-
-                        TextButton(
-                            onClick = {
-                                month = month.plusMonths(1)
-                            }
-                        ) {
-                            Text(
-                                "›",
-                                fontSize = 25.sp
-                            )
-                        }
-                    }
-
-                    Row(
-                        Modifier.fillMaxWidth()
-                    ) {
-                        listOf(
-                            "Пн", "Вт", "Ср", "Чт",
-                            "Пт", "Сб", "Вс"
-                        ).forEach { day ->
-                            Text(
-                                day,
-                                modifier = Modifier.weight(1f),
-                                textAlign = TextAlign.Center,
-                                fontSize = 11.sp,
-                                color = muted
-                            )
-                        }
-                    }
+                    WeekHeader()
 
                     val offset =
                         month.atDay(1).dayOfWeek.value - 1
-
-                    val count =
-                        month.lengthOfMonth()
-
-                    val rows =
-                        (offset + count + 6) / 7
+                    val count = month.lengthOfMonth()
+                    val rows = (offset + count + 6) / 7
 
                     repeat(rows) { row ->
-                        Row(
-                            Modifier.fillMaxWidth()
-                        ) {
+                        Row(Modifier.fillMaxWidth()) {
                             repeat(7) { col ->
                                 val day =
                                     row * 7 + col - offset + 1
 
                                 Box(
-                                    modifier = Modifier
+                                    Modifier
                                         .weight(1f)
                                         .height(38.dp)
                                         .then(
-                                            if (day in 1..count) {
+                                            if (day in 1..count)
                                                 Modifier.clickable {
                                                     onChange(
                                                         month.atDay(day)
@@ -1934,19 +1558,18 @@ private fun AppDateField(
                                                     )
                                                     open = false
                                                 }
-                                            } else Modifier
+                                            else Modifier
                                         ),
-                                    contentAlignment =
-                                        Alignment.Center
+                                    contentAlignment = Alignment.Center
                                 ) {
                                     if (day in 1..count) {
                                         Text(
-                                            day.toString(),
+                                            "$day",
                                             color =
                                                 if (
                                                     month.atDay(day) ==
-                                                    selectedDate
-                                                ) accent
+                                                    selected
+                                                ) mint
                                                 else Color.White
                                         )
                                     }
@@ -1957,21 +1580,35 @@ private fun AppDateField(
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        open = false
-                    }
-                ) {
+                TextButton(onClick = { open = false }) {
                     Text("Закрыть")
                 }
             },
-            containerColor = panel
+            containerColor = surface
         )
     }
 }
 
 @Composable
-private fun AppPanel(
+private fun StepTitle(
+    title: String,
+    description: String
+) {
+    Text(
+        title,
+        color = Color.White,
+        fontSize = 26.sp,
+        fontWeight = FontWeight.Bold
+    )
+    Text(
+        description,
+        color = secondary,
+        fontSize = 14.sp
+    )
+}
+
+@Composable
+private fun Panel(
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -1979,28 +1616,48 @@ private fun AppPanel(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
-            containerColor = panel
+            containerColor = surface
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement =
-                Arrangement.spacedBy(10.dp)
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
                 title,
-                color = muted,
+                color = secondary,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
-
             content()
         }
     }
 }
 
 @Composable
-private fun AppField(
+private fun Info(
+    label: String,
+    value: String
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            label,
+            color = secondary,
+            fontSize = 13.sp
+        )
+        Text(
+            value,
+            color = Color.White,
+            fontSize = 13.sp
+        )
+    }
+}
+
+@Composable
+private fun Field(
     label: String,
     value: String,
     numeric: Boolean = false,
@@ -2009,9 +1666,7 @@ private fun AppField(
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
-        label = {
-            Text(label)
-        },
+        label = { Text(label) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(
             keyboardType = if (numeric)
@@ -2020,37 +1675,4 @@ private fun AppField(
         ),
         modifier = Modifier.fillMaxWidth()
     )
-}
-
-private fun loadPayments(
-    raw: String
-): List<Payment> = runCatching {
-    val array = JSONArray(raw)
-
-    (0 until array.length()).map { index ->
-        val obj = array.getJSONObject(index)
-
-        Payment(
-            obj.getString("date"),
-            obj.getDouble("amount"),
-            obj.getString("type")
-        )
-    }
-}.getOrDefault(emptyList())
-
-private fun encodePayments(
-    payments: List<Payment>
-): String {
-    val array = JSONArray()
-
-    payments.forEach { payment ->
-        array.put(
-            JSONObject()
-                .put("date", payment.date)
-                .put("amount", payment.amount)
-                .put("type", payment.type)
-        )
-    }
-
-    return array.toString()
 }
