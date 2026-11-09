@@ -51,6 +51,15 @@ class MainActivity : ComponentActivity() {
         )
 
         setContent {
+var unlocked by remember { mutableStateOf(false) }
+
+if (!unlocked) {
+    SecurityScreen(
+        onUnlocked = { unlocked = true }
+    )
+    return@setContent
+}
+
             var tab by remember { mutableIntStateOf(0) }
 
             var start by remember {
