@@ -41,42 +41,86 @@ private data class Payment(
 )
 
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val prefs = getSharedPreferences("vahta_settings", MODE_PRIVATE)
+
+        val prefs = getSharedPreferences(
+            "vahta_settings",
+            MODE_PRIVATE
+        )
 
         setContent {
             var tab by remember { mutableIntStateOf(0) }
+
             var start by remember {
-                mutableStateOf(prefs.getString("start", "2026-10-25") ?: "2026-10-25")
+                mutableStateOf(
+                    prefs.getString("start", "2026-10-25")
+                        ?: "2026-10-25"
+                )
             }
+
             var work by remember {
-                mutableStateOf(prefs.getString("work", "45") ?: "45")
+                mutableStateOf(
+                    prefs.getString("work", "45") ?: "45"
+                )
             }
+
             var rest by remember {
-                mutableStateOf(prefs.getString("rest", "45") ?: "45")
+                mutableStateOf(
+                    prefs.getString("rest", "45") ?: "45"
+                )
             }
+
             var rate by remember {
-                mutableStateOf(prefs.getString("hourly", "600") ?: "600")
+                mutableStateOf(
+                    prefs.getString("hourly", "599.37")
+                        ?: "599.37"
+                )
             }
+
             var hours by remember {
-                mutableStateOf(prefs.getString("hours", "11") ?: "11")
+                mutableStateOf(
+                    prefs.getString("hours", "11") ?: "11"
+                )
             }
+
             var advance by remember {
-                mutableStateOf(prefs.getString("advance", "30") ?: "30")
+                mutableStateOf(
+                    prefs.getString("advance", "30") ?: "30"
+                )
             }
+
             var salary by remember {
-                mutableStateOf(prefs.getString("payday", "15") ?: "15")
+                mutableStateOf(
+                    prefs.getString("payday", "15") ?: "15"
+                )
             }
+
             var payDate by remember {
                 mutableStateOf(LocalDate.now().toString())
             }
-            var payAmount by remember { mutableStateOf("") }
-            var payType by remember { mutableStateOf("Зарплата") }
-            var payments by remember {
-                mutableStateOf(loadPayments(prefs.getString("payments", "[]") ?: "[]"))
+
+            var payAmount by remember {
+                mutableStateOf("")
             }
-            var seconds by remember { mutableLongStateOf(System.currentTimeMillis()) }
+
+            var payType by remember {
+                mutableStateOf("Зарплата")
+            }
+
+            var payments by remember {
+                mutableStateOf(
+                    loadPayments(
+                        prefs.getString("payments", "[]")
+                            ?: "[]"
+                    )
+                )
+            }
+
+            var seconds by remember {
+                mutableLongStateOf(System.currentTimeMillis())
+            }
 
             LaunchedEffect(Unit) {
                 while (true) {
@@ -98,30 +142,63 @@ class MainActivity : ComponentActivity() {
             }
 
             val today = LocalDate.now()
-            val startDate = runCatching { LocalDate.parse(start) }.getOrNull() ?: today
-            val workDays = (work.toIntOrNull() ?: 45).coerceIn(1, 365)
-            val restDays = (rest.toIntOrNull() ?: 45).coerceIn(1, 365)
+
+            val startDate = runCatching {
+                LocalDate.parse(start)
+            }.getOrNull() ?: today
+
+            val workDays = (
+                work.toIntOrNull() ?: 45
+            ).coerceIn(1, 365)
+
+            val restDays = (
+                rest.toIntOrNull() ?: 45
+            ).coerceIn(1, 365)
+
             val cycle = workDays + restDays
+
             val position = Math.floorMod(
-                ChronoUnit.DAYS.between(startDate, today), cycle.toLong()
+                ChronoUnit.DAYS.between(startDate, today),
+                cycle.toLong()
             ).toInt()
+
             val working = position < workDays
-            val remaining = if (working) workDays - position else cycle - position
-            val hourlyRate = (rate.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
-            val dailyHours = (hours.toDoubleOrNull() ?: 0.0).coerceIn(0.0, 24.0)
 
-            val millisInDay = 86400000.0
+            val remaining = if (working) {
+                workDays - position
+            } else {
+                cycle - position
+            }
+
+            val hourlyRate = (
+                rate.replace(',', '.').toDoubleOrNull()
+                    ?: 0.0
+            ).coerceAtLeast(0.0)
+
+            val dailyHours = (
+                hours.replace(',', '.').toDoubleOrNull()
+                    ?: 0.0
+            ).coerceIn(0.0, 24.0)
+
             val elapsedToday = (
-                seconds % millisInDay
-            ).toDouble() / millisInDay
+                seconds % 86400000L
+            ).toDouble() / 86400000.0
 
-            val completed = if (working) position else workDays
+            val completed = if (working) {
+                position
+            } else {
+                workDays
+            }
+
             val earned = (
-                completed + if (working) elapsedToday else 0.0
+                completed +
+                    if (working) elapsedToday else 0.0
             ) * dailyHours * hourlyRate
 
             val formatter = remember {
-                NumberFormat.getCurrencyInstance(Locale.forLanguageTag("ru-RU"))
+                NumberFormat.getCurrencyInstance(
+                    Locale.forLanguageTag("ru-RU")
+                )
             }
 
             MaterialTheme(
@@ -134,66 +211,123 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 Column(
-                    Modifier.fillMaxSize().background(navy)
+                    Modifier
+                        .fillMaxSize()
+                        .background(navy)
                 ) {
+
+                    val mainModifier = if (tab == 3) {
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    } else {
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(
+                                rememberScrollState()
+                            )
+                    }
+
                     Column(
-                        Modifier.weight(1f)
-                            .verticalScroll(rememberScrollState())
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                        modifier = mainModifier.padding(16.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(14.dp)
                     ) {
+
                         Text(
                             "ВАХТА",
                             fontSize = 30.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
-                        Text("Работа · Деньги · Жизнь", color = soft)
+
+                        Text(
+                            "Работа · Деньги · Жизнь",
+                            color = soft
+                        )
 
                         when (tab) {
+
                             0 -> {
                                 Panel("МОЙ ГРАФИК") {
                                     Text(
-                                        if (working) "НА ВАХТЕ" else "НА МЕЖВАХТЕ",
+                                        if (working) {
+                                            "НА ВАХТЕ"
+                                        } else {
+                                            "НА МЕЖВАХТЕ"
+                                        },
                                         color = cyan,
                                         fontWeight = FontWeight.Bold
                                     )
+
                                     Text(
-                                        "До ${if (working) "межвахты" else "вахты"}: $remaining дн.",
+                                        "До ${
+                                            if (working) "межвахты"
+                                            else "вахты"
+                                        }: $remaining дн.",
                                         fontSize = 23.sp,
                                         color = Color.White
                                     )
+
                                     LinearProgressIndicator(
-                                        progress = { position.toFloat() / cycle },
-                                        modifier = Modifier.fillMaxWidth(),
+                                        progress = {
+                                            position.toFloat() /
+                                                cycle.toFloat()
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth(),
                                         color = cyan
                                     )
-                                    Text("График $workDays/$restDays", color = soft)
+
+                                    Text(
+                                        "График $workDays/$restDays",
+                                        color = soft
+                                    )
                                 }
 
-                                Panel("ЖИВОЙ СЧЁТЧИК ЗАРАБОТКА") {
+                                Panel(
+                                    "ЖИВОЙ СЧЁТЧИК ЗАРАБОТКА"
+                                ) {
                                     Text(
                                         formatter.format(earned),
                                         fontSize = 27.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = cyan
                                     )
+
                                     Text(
-                                        "Прогноз за текущий рабочий период",
+                                        "Оценка заработка за " +
+                                            "рабочий период",
                                         color = soft
                                     )
+
                                     Text(
-                                        "Без налогов, премий и межвахтовых начислений",
+                                        "Без налогов, премий, " +
+                                            "межвахтовых начислений",
                                         fontSize = 12.sp,
                                         color = soft
                                     )
                                 }
 
                                 Panel("БЛИЖАЙШИЕ ВЫПЛАТЫ") {
-                                    PaymentDateRow("Зарплата", salary, today)
-                                    PaymentDateRow("Аванс", advance, today)
+                                    PaymentDateRow(
+                                        "Зарплата",
+                                        salary,
+                                        today
+                                    )
+
+                                    PaymentDateRow(
+                                        "Аванс",
+                                        advance,
+                                        today
+                                    )
+
                                     Text(
-                                        "Тип выплаты можно уточнить в истории поступлений",
+                                        "Это календарные даты. " +
+                                            "Суммы и межвахтовые " +
+                                            "выплаты рассчитываются " +
+                                            "отдельно.",
                                         color = soft,
                                         fontSize = 12.sp
                                     )
@@ -202,28 +336,49 @@ class MainActivity : ComponentActivity() {
 
                             1 -> {
                                 Panel("КАЛЕНДАРЬ ВАХТ") {
-                                    Text("Дата начала цикла", color = soft)
+                                    Text(
+                                        "Дата начала цикла",
+                                        color = soft
+                                    )
+
                                     CalendarField(start) {
                                         start = it
                                         save()
                                     }
+
                                     Text(
                                         "Сегодня: ${today.formatRu()}",
                                         color = Color.White
                                     )
+
                                     Text(
-                                        if (working) "Рабочий период" else "Межвахтовый отдых",
+                                        if (working) {
+                                            "Рабочий период"
+                                        } else {
+                                            "Межвахтовый отдых"
+                                        },
                                         color = cyan
                                     )
-                                    Text("Осталось $remaining дн.", color = soft)
+
+                                    Text(
+                                        "Осталось $remaining дн.",
+                                        color = soft
+                                    )
                                 }
 
                                 Panel("НАСТРОЙКА ГРАФИКА") {
-                                    InputField("Дней вахты", work) {
+                                    InputField(
+                                        "Дней вахты",
+                                        work
+                                    ) {
                                         work = it
                                         save()
                                     }
-                                    InputField("Дней межвахты", rest) {
+
+                                    InputField(
+                                        "Дней межвахты",
+                                        rest
+                                    ) {
                                         rest = it
                                         save()
                                     }
@@ -233,122 +388,239 @@ class MainActivity : ComponentActivity() {
                             2 -> {
                                 Panel("НАЧИСЛЕНИЯ") {
                                     Text(
-                                        "Прогноз за рабочий период",
+                                        "Оценка за рабочий период",
                                         color = soft
                                     )
+
                                     Text(
                                         formatter.format(earned),
                                         fontSize = 25.sp,
                                         color = cyan
                                     )
-                                    InputField("ЧТС, ₽/час", rate) {
+
+                                    InputField(
+                                        "ЧТС, ₽/час",
+                                        rate
+                                    ) {
                                         rate = it
                                         save()
                                     }
-                                    InputField("Часов в смене", hours) {
+
+                                    InputField(
+                                        "Часов в смене",
+                                        hours
+                                    ) {
                                         hours = it
                                         save()
                                     }
                                 }
 
-                                Panel("ДОБАВИТЬ ФАКТИЧЕСКУЮ ВЫПЛАТУ") {
-                                    CalendarField(payDate) { payDate = it }
+                                Panel(
+                                    "ДОБАВИТЬ ФАКТИЧЕСКУЮ ВЫПЛАТУ"
+                                ) {
+                                    CalendarField(payDate) {
+                                        payDate = it
+                                    }
 
-                                    InputField("Получено, ₽", payAmount) {
+                                    InputField(
+                                        "Получено, ₽",
+                                        payAmount
+                                    ) {
                                         payAmount = it
                                     }
 
-                                    Text("Тип поступления", color = soft)
+                                    Text(
+                                        "Тип поступления",
+                                        color = soft
+                                    )
 
                                     listOf(
                                         "Зарплата",
                                         "Аванс",
                                         "Межвахта",
-                                        "Смешанная"
+                                        "Смешанная",
+                                        "Отпускные",
+                                        "Другое"
                                     ).forEach { option ->
                                         Row(
-                                            verticalAlignment = Alignment.CenterVertically,
+                                            verticalAlignment =
+                                                Alignment.CenterVertically,
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .clickable { payType = option }
+                                                .clickable {
+                                                    payType = option
+                                                }
                                         ) {
                                             RadioButton(
-                                                selected = payType == option,
-                                                onClick = { payType = option }
+                                                selected =
+                                                    payType == option,
+                                                onClick = {
+                                                    payType = option
+                                                }
                                             )
-                                            Text(option, color = Color.White)
+
+                                            Text(
+                                                option,
+                                                color = Color.White
+                                            )
                                         }
                                     }
 
+                                    val amountValue = payAmount
+                                        .replace(',', '.')
+                                        .toDoubleOrNull()
+
                                     Button(
                                         onClick = {
-                                            val value = payAmount.replace(',', '.')
-                                                .toDoubleOrNull()
-                                            if (value != null && value > 0) {
-                                                payments = payments + Payment(
-                                                    payDate, value, payType
-                                                )
-                                                prefs.edit().putString(
-                                                    "payments",
-                                                    savePayments(payments)
-                                                ).apply()
+                                            val value = amountValue
+
+                                            if (
+                                                value != null &&
+                                                value.isFinite() &&
+                                                value > 0
+                                            ) {
+                                                payments =
+                                                    payments + Payment(
+                                                        payDate,
+                                                        value,
+                                                        payType
+                                                    )
+
+                                                prefs.edit()
+                                                    .putString(
+                                                        "payments",
+                                                        savePayments(
+                                                            payments
+                                                        )
+                                                    )
+                                                    .apply()
+
                                                 payAmount = ""
                                             }
                                         },
-                                        enabled = (
-                                            payAmount.replace(',', '.')
-                                                .toDoubleOrNull() ?: 0.0
-                                        ) > 0,
-                                        modifier = Modifier.fillMaxWidth()
+                                        enabled =
+                                            amountValue != null &&
+                                            amountValue.isFinite() &&
+                                            amountValue > 0,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
                                     ) {
-                                        Text("Сохранить поступление")
+                                        Text(
+                                            "Сохранить поступление"
+                                        )
                                     }
                                 }
 
                                 Panel("ИСТОРИЯ ВЫПЛАТ") {
                                     if (payments.isEmpty()) {
-                                        Text("Поступлений пока нет", color = soft)
+                                        Text(
+                                            "Поступлений пока нет",
+                                            color = soft
+                                        )
                                     }
 
-                                    payments.sortedByDescending { it.date }
+                                    payments
+                                        .sortedByDescending {
+                                            it.date
+                                        }
                                         .forEach { payment ->
                                             HorizontalDivider(
-                                                color = Color(0xFF36506B)
+                                                color =
+                                                    Color(0xFF36506B)
                                             )
+
                                             Text(
-                                                "${payment.date} · ${payment.type}",
+                                                "${payment.date} · " +
+                                                    payment.type,
                                                 color = soft
                                             )
+
                                             Text(
-                                                formatter.format(payment.amount),
+                                                formatter.format(
+                                                    payment.amount
+                                                ),
                                                 color = cyan,
                                                 fontSize = 20.sp
                                             )
+
+                                            TextButton(
+                                                onClick = {
+                                                    val index =
+                                                        payments.indexOf(
+                                                            payment
+                                                        )
+
+                                                    if (index >= 0) {
+                                                        payments =
+                                                            payments
+                                                                .toMutableList()
+                                                                .also {
+                                                                    it.removeAt(
+                                                                        index
+                                                                    )
+                                                                }
+
+                                                        prefs.edit()
+                                                            .putString(
+                                                                "payments",
+                                                                savePayments(
+                                                                    payments
+                                                                )
+                                                            )
+                                                            .apply()
+                                                    }
+                                                }
+                                            ) {
+                                                Text("Удалить")
+                                            }
                                         }
                                 }
                             }
 
                             3 -> {
+                                OrganizerScreen(
+                                    this@MainActivity
+                                )
+                            }
+
+                            4 -> {
                                 Panel("ДАТЫ ВЫПЛАТ") {
-                                    InputField("Число зарплаты", salary) {
+                                    InputField(
+                                        "Число зарплаты",
+                                        salary
+                                    ) {
                                         salary = it
                                         save()
                                     }
-                                    InputField("Число аванса", advance) {
+
+                                    InputField(
+                                        "Число аванса",
+                                        advance
+                                    ) {
                                         advance = it
                                         save()
                                     }
+
                                     Text(
-                                        "Выплаты межвахты и смешанные начисления " +
-                                        "будут рассчитываться отдельно.",
+                                        "Межвахтовые выплаты " +
+                                            "и смешанные начисления " +
+                                            "пока не рассчитываются.",
                                         color = soft
                                     )
                                 }
 
                                 Panel("ДАННЫЕ") {
                                     Text(
-                                        "Настройки и фактические выплаты " +
-                                        "сохраняются на этом устройстве.",
+                                        "Настройки, история выплат " +
+                                            "и записи органайзера " +
+                                            "сохраняются на телефоне.",
+                                        color = soft
+                                    )
+
+                                    Text(
+                                        "Защита по отпечатку " +
+                                            "пальца и PIN-коду " +
+                                            "пока не подключена.",
                                         color = soft
                                     )
                                 }
@@ -356,19 +628,40 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    NavigationBar(containerColor = surface) {
+                    NavigationBar(
+                        containerColor = surface
+                    ) {
                         listOf(
-                            "Главная", "Календарь", "Финансы", "Настройки"
+                            "Главная",
+                            "Календарь",
+                            "Финансы",
+                            "Мои дела",
+                            "Настройки"
                         ).forEachIndexed { index, label ->
+
                             NavigationBarItem(
                                 selected = tab == index,
-                                onClick = { tab = index },
+                                onClick = {
+                                    tab = index
+                                },
                                 icon = {
                                     Text(
-                                        listOf("⌂", "▦", "₽", "⚙")[index]
+                                        listOf(
+                                            "⌂",
+                                            "▦",
+                                            "₽",
+                                            "☑",
+                                            "⚙"
+                                        )[index]
                                     )
                                 },
-                                label = { Text(label, fontSize = 10.sp) }
+                                label = {
+                                    Text(
+                                        label,
+                                        fontSize = 9.sp,
+                                        maxLines = 1
+                                    )
+                                }
                             )
                         }
                     }
@@ -386,11 +679,14 @@ private fun Panel(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = surface)
+        colors = CardDefaults.cardColors(
+            containerColor = surface
+        )
     ) {
         Column(
-            Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(10.dp)
         ) {
             Text(
                 title,
@@ -398,6 +694,7 @@ private fun Panel(
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
+
             content()
         }
     }
@@ -412,7 +709,9 @@ private fun InputField(
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
-        label = { Text(label) },
+        label = {
+            Text(label)
+        },
         singleLine = true,
         modifier = Modifier.fillMaxWidth()
     )
@@ -424,9 +723,12 @@ private fun CalendarField(
     onChange: (String) -> Unit
 ) {
     val context = LocalContext.current
+
     val date = runCatching {
         LocalDate.parse(value)
-    }.getOrElse { LocalDate.now() }
+    }.getOrElse {
+        LocalDate.now()
+    }
 
     OutlinedButton(
         onClick = {
@@ -434,7 +736,11 @@ private fun CalendarField(
                 context,
                 { _, year, month, day ->
                     onChange(
-                        LocalDate.of(year, month + 1, day).toString()
+                        LocalDate.of(
+                            year,
+                            month + 1,
+                            day
+                        ).toString()
                     )
                 },
                 date.year,
@@ -449,7 +755,11 @@ private fun CalendarField(
 }
 
 private fun LocalDate.formatRu(): String =
-    "%02d.%02d.%04d".format(dayOfMonth, monthValue, year)
+    "%02d.%02d.%04d".format(
+        dayOfMonth,
+        monthValue,
+        year
+    )
 
 @Composable
 private fun PaymentDateRow(
@@ -457,12 +767,21 @@ private fun PaymentDateRow(
     dayText: String,
     today: LocalDate
 ) {
-    val day = (dayText.toIntOrNull() ?: 1).coerceIn(1, 31)
-    fun dateFor(month: YearMonth): LocalDate =
-        month.atDay(day.coerceAtMost(month.lengthOfMonth()))
+    val day = (
+        dayText.toIntOrNull() ?: 1
+    ).coerceIn(1, 31)
+
+    fun dateFor(month: YearMonth): LocalDate {
+        return month.atDay(
+            day.coerceAtMost(
+                month.lengthOfMonth()
+            )
+        )
+    }
 
     val month = YearMonth.from(today)
     val current = dateFor(month)
+
     val next = if (current.isBefore(today)) {
         dateFor(month.plusMonths(1))
     } else {
@@ -470,30 +789,45 @@ private fun PaymentDateRow(
     }
 
     Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement =
+            Arrangement.SpaceBetween
     ) {
-        Text(label, color = Color.White)
-        Text(next.formatRu(), color = cyan)
+        Text(
+            label,
+            color = Color.White
+        )
+
+        Text(
+            next.formatRu(),
+            color = cyan
+        )
     }
 }
 
-private fun loadPayments(raw: String): List<Payment> {
+private fun loadPayments(
+    raw: String
+): List<Payment> {
     return runCatching {
         val array = JSONArray(raw)
+
         (0 until array.length()).map { index ->
             val item = array.getJSONObject(index)
+
             Payment(
-                item.getString("date"),
-                item.getDouble("amount"),
-                item.getString("type")
+                date = item.getString("date"),
+                amount = item.getDouble("amount"),
+                type = item.getString("type")
             )
         }
     }.getOrDefault(emptyList())
 }
 
-private fun savePayments(payments: List<Payment>): String {
+private fun savePayments(
+    payments: List<Payment>
+): String {
     val array = JSONArray()
+
     payments.forEach { payment ->
         array.put(
             JSONObject()
@@ -502,5 +836,6 @@ private fun savePayments(payments: List<Payment>): String {
                 .put("type", payment.type)
         )
     }
+
     return array.toString()
 }
