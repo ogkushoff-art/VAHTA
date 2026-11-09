@@ -1,147 +1,375 @@
 
 package com.vahta.app
 
+import android.app.DatePickerDialog
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import org.json.JSONArray
+import org.json.JSONObject
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.temporal.ChronoUnit
 import java.text.NumberFormat
 import java.util.Locale
 
-private val bg = Color(0xFF101C2C)
-private val panel = Color(0xFF20344B)
-private val accent = Color(0xFF58DDB2)
-private val muted = Color(0xFFB3C4D7)
+private val navy = Color(0xFF0B1728)
+private val surface = Color(0xFF1A2D45)
+private val cyan = Color(0xFF56E4C0)
+private val soft = Color(0xFFB4C6D9)
+
+private data class Payment(
+    val date: String,
+    val amount: Double,
+    val type: String
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("vahta_settings", MODE_PRIVATE)
+
         setContent {
-            var start by remember { mutableStateOf(prefs.getString("start", "2026-11-01") ?: "2026-11-01") }
-            var work by remember { mutableStateOf(prefs.getString("work", "30") ?: "30") }
-            var rest by remember { mutableStateOf(prefs.getString("rest", "30") ?: "30") }
-            var hourly by remember { mutableStateOf(prefs.getString("hourly", "600") ?: "600") }
-            var salary by remember { mutableStateOf(prefs.getString("salary", "150000") ?: "150000") }
-            var hours by remember { mutableStateOf(prefs.getString("hours", "11") ?: "11") }
-            var mode by remember { mutableStateOf(prefs.getString("mode", "hourly") ?: "hourly") }
-            var advanceDay by remember { mutableStateOf(prefs.getString("advance", "25") ?: "25") }
-            var salaryDay by remember { mutableStateOf(prefs.getString("payday", "10") ?: "10") }
-            var restDay by remember { mutableStateOf(prefs.getString("restday", "15") ?: "15") }
-            var restSeparate by remember { mutableStateOf(prefs.getBoolean("restSeparate", false)) }
-            var tab by remember { mutableStateOf(0) }
-            var clock by remember { mutableLongStateOf(System.currentTimeMillis()) }
-            LaunchedEffect(Unit) { while (true) { clock = System.currentTimeMillis(); delay(1000) } }
-            fun save() {
-                prefs.edit().putString("start", start).putString("work", work)
-                    .putString("rest", rest).putString("hourly", hourly)
-                    .putString("salary", salary).putString("hours", hours)
-                    .putString("mode", mode).putString("advance", advanceDay)
-                    .putString("payday", salaryDay).putString("restday", restDay)
-                    .putBoolean("restSeparate", restSeparate).apply()
+            var tab by remember { mutableIntStateOf(0) }
+            var start by remember {
+                mutableStateOf(prefs.getString("start", "2026-10-25") ?: "2026-10-25")
             }
-            val startDate = runCatching { LocalDate.parse(start) }.getOrNull()
-            val w = work.toIntOrNull()?.coerceIn(1, 365) ?: 30
-            val r = rest.toIntOrNull()?.coerceIn(1, 365) ?: 30
+            var work by remember {
+                mutableStateOf(prefs.getString("work", "45") ?: "45")
+            }
+            var rest by remember {
+                mutableStateOf(prefs.getString("rest", "45") ?: "45")
+            }
+            var rate by remember {
+                mutableStateOf(prefs.getString("hourly", "600") ?: "600")
+            }
+            var hours by remember {
+                mutableStateOf(prefs.getString("hours", "11") ?: "11")
+            }
+            var advance by remember {
+                mutableStateOf(prefs.getString("advance", "30") ?: "30")
+            }
+            var salary by remember {
+                mutableStateOf(prefs.getString("payday", "15") ?: "15")
+            }
+            var payDate by remember {
+                mutableStateOf(LocalDate.now().toString())
+            }
+            var payAmount by remember { mutableStateOf("") }
+            var payType by remember { mutableStateOf("Зарплата") }
+            var payments by remember {
+                mutableStateOf(loadPayments(prefs.getString("payments", "[]") ?: "[]"))
+            }
+            var seconds by remember { mutableLongStateOf(System.currentTimeMillis()) }
+
+            LaunchedEffect(Unit) {
+                while (true) {
+                    seconds = System.currentTimeMillis()
+                    delay(1000)
+                }
+            }
+
+            fun save() {
+                prefs.edit()
+                    .putString("start", start)
+                    .putString("work", work)
+                    .putString("rest", rest)
+                    .putString("hourly", rate)
+                    .putString("hours", hours)
+                    .putString("advance", advance)
+                    .putString("payday", salary)
+                    .apply()
+            }
+
             val today = LocalDate.now()
-            val cyclePos = startDate?.let { Math.floorMod(ChronoUnit.DAYS.between(it, today), (w+r).toLong()).toInt() } ?: 0
-            val isWorking = cyclePos < w
-            val remaining = if (isWorking) w-cyclePos else w+r-cyclePos
-            val elapsedDays = if (isWorking) cyclePos else w
-            val hourlyAmount = hourly.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
-            val shiftHours = hours.toDoubleOrNull()?.coerceIn(0.0,24.0) ?: 0.0
-            val monthlySalary = salary.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
-            val earned = if (mode == "hourly") elapsedDays*shiftHours*hourlyAmount else elapsedDays*monthlySalary/30.0
-            val money = remember { NumberFormat.getCurrencyInstance(Locale.forLanguageTag("ru-RU")) }
-            MaterialTheme(colorScheme = darkColorScheme(primary = accent, background = bg, surface = panel, onSurface = Color.White, onBackground = Color.White)) {
-                Column(Modifier.fillMaxSize().background(bg)) {
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Text("ВАХТА", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                        Text("Работа · Деньги · Жизнь", color = muted)
-                        when(tab) {
+            val startDate = runCatching { LocalDate.parse(start) }.getOrNull() ?: today
+            val workDays = (work.toIntOrNull() ?: 45).coerceIn(1, 365)
+            val restDays = (rest.toIntOrNull() ?: 45).coerceIn(1, 365)
+            val cycle = workDays + restDays
+            val position = Math.floorMod(
+                ChronoUnit.DAYS.between(startDate, today), cycle.toLong()
+            ).toInt()
+            val working = position < workDays
+            val remaining = if (working) workDays - position else cycle - position
+            val hourlyRate = (rate.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
+            val dailyHours = (hours.toDoubleOrNull() ?: 0.0).coerceIn(0.0, 24.0)
+
+            val millisInDay = 86400000.0
+            val elapsedToday = (
+                seconds % millisInDay
+            ).toDouble() / millisInDay
+
+            val completed = if (working) position else workDays
+            val earned = (
+                completed + if (working) elapsedToday else 0.0
+            ) * dailyHours * hourlyRate
+
+            val formatter = remember {
+                NumberFormat.getCurrencyInstance(Locale.forLanguageTag("ru-RU"))
+            }
+
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = cyan,
+                    background = navy,
+                    surface = surface,
+                    onSurface = Color.White,
+                    onBackground = Color.White
+                )
+            ) {
+                Column(
+                    Modifier.fillMaxSize().background(navy)
+                ) {
+                    Column(
+                        Modifier.weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Text(
+                            "ВАХТА",
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text("Работа · Деньги · Жизнь", color = soft)
+
+                        when (tab) {
                             0 -> {
-                                Tile("МОЯ ВАХТА") {
-                                    Text(if (isWorking) "До межвахты: $remaining дн." else "До вахты: $remaining дн.", fontSize = 24.sp, color = accent)
-                                    Spacer(Modifier.height(8.dp))
-                                    LinearProgressIndicator(progress = { cyclePos.toFloat()/(w+r) }, modifier = Modifier.fillMaxWidth(), color = accent)
-                                    Text("График $w/$r · ${if (isWorking) "На вахте" else "На межвахте"}", color = muted)
+                                Panel("МОЙ ГРАФИК") {
+                                    Text(
+                                        if (working) "НА ВАХТЕ" else "НА МЕЖВАХТЕ",
+                                        color = cyan,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        "До ${if (working) "межвахты" else "вахты"}: $remaining дн.",
+                                        fontSize = 23.sp,
+                                        color = Color.White
+                                    )
+                                    LinearProgressIndicator(
+                                        progress = { position.toFloat() / cycle },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = cyan
+                                    )
+                                    Text("График $workDays/$restDays", color = soft)
                                 }
-                                Tile("РАСЧЁТНЫЙ ЗАРАБОТОК ЗА ЦИКЛ") {
-                                    Text(money.format(earned), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = accent)
-                                    Text("Предварительно, до налогов и надбавок", color = muted, fontSize = 12.sp)
+
+                                Panel("ЖИВОЙ СЧЁТЧИК ЗАРАБОТКА") {
+                                    Text(
+                                        formatter.format(earned),
+                                        fontSize = 27.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = cyan
+                                    )
+                                    Text(
+                                        "Прогноз за текущий рабочий период",
+                                        color = soft
+                                    )
+                                    Text(
+                                        "Без налогов, премий и межвахтовых начислений",
+                                        fontSize = 12.sp,
+                                        color = soft
+                                    )
                                 }
-                                Tile("БЛИЖАЙШИЕ ВЫПЛАТЫ") {
-                                    PaymentRow("Аванс", advanceDay, today)
-                                    PaymentRow("Зарплата", salaryDay, today)
-                                    if (restSeparate) PaymentRow("Межвахта", restDay, today)
-                                    else Text("Межвахта: в составе зарплаты", color = muted)
+
+                                Panel("БЛИЖАЙШИЕ ВЫПЛАТЫ") {
+                                    PaymentDateRow("Зарплата", salary, today)
+                                    PaymentDateRow("Аванс", advance, today)
+                                    Text(
+                                        "Тип выплаты можно уточнить в истории поступлений",
+                                        color = soft,
+                                        fontSize = 12.sp
+                                    )
                                 }
                             }
+
                             1 -> {
-                                Tile("КАЛЕНДАРЬ ВАХТ") {
-                                    Text("Сегодня: $today", color = muted)
-                                    Text(if (isWorking) "Рабочий период" else "Межвахтовый отдых", color = accent)
-                                    Text("До смены периода: $remaining дн.", color = Color.White)
+                                Panel("КАЛЕНДАРЬ ВАХТ") {
+                                    Text("Дата начала цикла", color = soft)
+                                    CalendarField(start) {
+                                        start = it
+                                        save()
+                                    }
+                                    Text(
+                                        "Сегодня: ${today.formatRu()}",
+                                        color = Color.White
+                                    )
+                                    Text(
+                                        if (working) "Рабочий период" else "Межвахтовый отдых",
+                                        color = cyan
+                                    )
+                                    Text("Осталось $remaining дн.", color = soft)
                                 }
-                                Tile("ГРАФИК ВЫПЛАТ") {
-                                    PaymentRow("Аванс", advanceDay, today)
-                                    PaymentRow("Зарплата", salaryDay, today)
-                                    if (restSeparate) PaymentRow("Межвахта", restDay, today)
+
+                                Panel("НАСТРОЙКА ГРАФИКА") {
+                                    InputField("Дней вахты", work) {
+                                        work = it
+                                        save()
+                                    }
+                                    InputField("Дней межвахты", rest) {
+                                        rest = it
+                                        save()
+                                    }
                                 }
                             }
+
                             2 -> {
-                                Tile("СПОСОБ ОПЛАТЫ") {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        FilterChip(selected = mode=="hourly", onClick = { mode="hourly"; save() }, label = { Text("Почасовая") })
-                                        FilterChip(selected = mode=="salary", onClick = { mode="salary"; save() }, label = { Text("Оклад") })
+                                Panel("НАЧИСЛЕНИЯ") {
+                                    Text(
+                                        "Прогноз за рабочий период",
+                                        color = soft
+                                    )
+                                    Text(
+                                        formatter.format(earned),
+                                        fontSize = 25.sp,
+                                        color = cyan
+                                    )
+                                    InputField("ЧТС, ₽/час", rate) {
+                                        rate = it
+                                        save()
                                     }
-                                    if(mode=="hourly") {
-                                        Field("ЧТС, ₽/час", hourly) { hourly=it; save() }
-                                        Field("Часов в смене", hours) { hours=it; save() }
-                                    } else Field("Оклад, ₽/месяц", salary) { salary=it; save() }
+                                    InputField("Часов в смене", hours) {
+                                        hours = it
+                                        save()
+                                    }
                                 }
-                                Tile("ГРАФИК ПЕРЕЧИСЛЕНИЙ") {
-                                    Field("День аванса (1–31)", advanceDay) { advanceDay=it; save() }
-                                    Field("День зарплаты (1–31)", salaryDay) { salaryDay=it; save() }
-                                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                                        Checkbox(checked=restSeparate, onCheckedChange={restSeparate=it; save()})
-                                        Text("Межвахта отдельной выплатой")
+
+                                Panel("ДОБАВИТЬ ФАКТИЧЕСКУЮ ВЫПЛАТУ") {
+                                    CalendarField(payDate) { payDate = it }
+
+                                    InputField("Получено, ₽", payAmount) {
+                                        payAmount = it
                                     }
-                                    if(restSeparate) Field("День выплаты межвахты", restDay) { restDay=it; save() }
-                                    Text("Даты предварительные: переносы на выходные и праздники ещё не учитываются.", color=muted, fontSize=12.sp)
+
+                                    Text("Тип поступления", color = soft)
+
+                                    listOf(
+                                        "Зарплата",
+                                        "Аванс",
+                                        "Межвахта",
+                                        "Смешанная"
+                                    ).forEach { option ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { payType = option }
+                                        ) {
+                                            RadioButton(
+                                                selected = payType == option,
+                                                onClick = { payType = option }
+                                            )
+                                            Text(option, color = Color.White)
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            val value = payAmount.replace(',', '.')
+                                                .toDoubleOrNull()
+                                            if (value != null && value > 0) {
+                                                payments = payments + Payment(
+                                                    payDate, value, payType
+                                                )
+                                                prefs.edit().putString(
+                                                    "payments",
+                                                    savePayments(payments)
+                                                ).apply()
+                                                payAmount = ""
+                                            }
+                                        },
+                                        enabled = (
+                                            payAmount.replace(',', '.')
+                                                .toDoubleOrNull() ?: 0.0
+                                        ) > 0,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Сохранить поступление")
+                                    }
+                                }
+
+                                Panel("ИСТОРИЯ ВЫПЛАТ") {
+                                    if (payments.isEmpty()) {
+                                        Text("Поступлений пока нет", color = soft)
+                                    }
+
+                                    payments.sortedByDescending { it.date }
+                                        .forEach { payment ->
+                                            HorizontalDivider(
+                                                color = Color(0xFF36506B)
+                                            )
+                                            Text(
+                                                "${payment.date} · ${payment.type}",
+                                                color = soft
+                                            )
+                                            Text(
+                                                formatter.format(payment.amount),
+                                                color = cyan,
+                                                fontSize = 20.sp
+                                            )
+                                        }
                                 }
                             }
+
                             3 -> {
-                                Tile("ГРАФИК РАБОТЫ") {
-                                    Field("Начало вахты (ГГГГ-ММ-ДД)", start) { start=it; save() }
-                                    if(startDate==null) Text("Неверная дата", color=Color(0xFFFF8888))
-                                    Field("Дней вахты", work) { work=it; save() }
-                                    Field("Дней межвахты", rest) { rest=it; save() }
+                                Panel("ДАТЫ ВЫПЛАТ") {
+                                    InputField("Число зарплаты", salary) {
+                                        salary = it
+                                        save()
+                                    }
+                                    InputField("Число аванса", advance) {
+                                        advance = it
+                                        save()
+                                    }
+                                    Text(
+                                        "Выплаты межвахты и смешанные начисления " +
+                                        "будут рассчитываться отдельно.",
+                                        color = soft
+                                    )
                                 }
-                                Tile("О ПРОГНОЗЕ") {
-                                    Text("Это тестовая версия. Оплата межвахтовых дней, отпускные, налог, ночные и переработки пока не включены в сумму.", color=muted)
+
+                                Panel("ДАННЫЕ") {
+                                    Text(
+                                        "Настройки и фактические выплаты " +
+                                        "сохраняются на этом устройстве.",
+                                        color = soft
+                                    )
                                 }
                             }
                         }
                     }
-                    NavigationBar(containerColor = panel) {
-                        listOf("Главная", "Календарь", "Финансы", "Настройки").forEachIndexed { index, label ->
-                            NavigationBarItem(selected=tab==index, onClick={tab=index}, icon={Text(listOf("⌂","▦","₽","⚙")[index])}, label={Text(label, fontSize=10.sp)})
+
+                    NavigationBar(containerColor = surface) {
+                        listOf(
+                            "Главная", "Календарь", "Финансы", "Настройки"
+                        ).forEachIndexed { index, label ->
+                            NavigationBarItem(
+                                selected = tab == index,
+                                onClick = { tab = index },
+                                icon = {
+                                    Text(
+                                        listOf("⌂", "▦", "₽", "⚙")[index]
+                                    )
+                                },
+                                label = { Text(label, fontSize = 10.sp) }
+                            )
                         }
                     }
                 }
@@ -151,29 +379,128 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun Tile(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(colors=CardDefaults.cardColors(containerColor=panel), shape=RoundedCornerShape(18.dp), modifier=Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp), verticalArrangement=Arrangement.spacedBy(9.dp)) {
-            Text(title, fontSize=12.sp, fontWeight=FontWeight.Bold, color=muted)
+private fun Panel(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = surface)
+    ) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                title,
+                color = soft,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
             content()
         }
     }
 }
 
 @Composable
-private fun Field(label: String, value: String, change: (String)->Unit) {
-    OutlinedTextField(value=value, onValueChange=change, label={Text(label)}, modifier=Modifier.fillMaxWidth(), singleLine=true)
+private fun InputField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(label) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable
-private fun PaymentRow(label: String, dayText: String, today: LocalDate) {
-    val day = dayText.toIntOrNull()?.coerceIn(1,31) ?: 1
-    fun dateFor(month: YearMonth): LocalDate = month.atDay(day.coerceAtMost(month.lengthOfMonth()))
-    val month = YearMonth.from(today)
-    val candidate = dateFor(month)
-    val date = if(candidate.isBefore(today)) dateFor(month.plusMonths(1)) else candidate
-    Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween) {
-        Text(label, color=Color.White)
-        Text(date.toString(), color=accent)
+private fun CalendarField(
+    value: String,
+    onChange: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val date = runCatching {
+        LocalDate.parse(value)
+    }.getOrElse { LocalDate.now() }
+
+    OutlinedButton(
+        onClick = {
+            DatePickerDialog(
+                context,
+                { _, year, month, day ->
+                    onChange(
+                        LocalDate.of(year, month + 1, day).toString()
+                    )
+                },
+                date.year,
+                date.monthValue - 1,
+                date.dayOfMonth
+            ).show()
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("📅 ${date.formatRu()}")
     }
+}
+
+private fun LocalDate.formatRu(): String =
+    "%02d.%02d.%04d".format(dayOfMonth, monthValue, year)
+
+@Composable
+private fun PaymentDateRow(
+    label: String,
+    dayText: String,
+    today: LocalDate
+) {
+    val day = (dayText.toIntOrNull() ?: 1).coerceIn(1, 31)
+    fun dateFor(month: YearMonth): LocalDate =
+        month.atDay(day.coerceAtMost(month.lengthOfMonth()))
+
+    val month = YearMonth.from(today)
+    val current = dateFor(month)
+    val next = if (current.isBefore(today)) {
+        dateFor(month.plusMonths(1))
+    } else {
+        current
+    }
+
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, color = Color.White)
+        Text(next.formatRu(), color = cyan)
+    }
+}
+
+private fun loadPayments(raw: String): List<Payment> {
+    return runCatching {
+        val array = JSONArray(raw)
+        (0 until array.length()).map { index ->
+            val item = array.getJSONObject(index)
+            Payment(
+                item.getString("date"),
+                item.getDouble("amount"),
+                item.getString("type")
+            )
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun savePayments(payments: List<Payment>): String {
+    val array = JSONArray()
+    payments.forEach { payment ->
+        array.put(
+            JSONObject()
+                .put("date", payment.date)
+                .put("amount", payment.amount)
+                .put("type", payment.type)
+        )
+    }
+    return array.toString()
 }
