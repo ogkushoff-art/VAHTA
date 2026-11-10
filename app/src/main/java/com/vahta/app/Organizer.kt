@@ -42,7 +42,10 @@ private data class OrganizerItem(
     val title: String,
     val details: String,
     val date: String,
-    val done: Boolean
+    val done: Boolean,
+    val debtBalance: Double = 0.0,
+    val debtMonthly: Double = 0.0,
+    val debtDueDay: Int = 0
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -54,14 +57,16 @@ fun OrganizerScreen(context: Context) {
     var items by remember {
         mutableStateOf(readOrganizer(prefs.getString("items", "[]") ?: "[]"))
     }
-    var category by remember { mutableStateOf(organizerCategories.first()) }
-    var categoryMenu by remember { mutableStateOf(false) }
+    var category by remember { mutableStateOf<String?>(null) }
     var editingId by remember { mutableStateOf<Long?>(null) }
     var formOpen by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
     var details by remember { mutableStateOf("") }
     var date by remember { mutableStateOf("") }
     var deleteId by remember { mutableStateOf<Long?>(null) }
+    var debtBalance by remember { mutableStateOf("") }
+    var debtMonthly by remember { mutableStateOf("") }
+    var debtDueDay by remember { mutableStateOf("") }
 
     fun update(newItems: List<OrganizerItem>) {
         items = newItems
@@ -73,10 +78,14 @@ fun OrganizerScreen(context: Context) {
         title = ""
         details = ""
         date = ""
+        debtBalance = ""
+        debtMonthly = ""
+        debtDueDay = ""
         formOpen = false
     }
 
-    val visible = items.filter { it.category == category }
+    val activeCategory = category
+    val visible = items.filter { it.category == activeCategory }
     val completed = visible.count { it.done }
 
     Column(
@@ -87,69 +96,89 @@ fun OrganizerScreen(context: Context) {
             .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("МОИ ДЕЛА", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
-        Text("Покупки · подарки · лекарства · планы", color = orgMuted, fontSize = 13.sp)
+        if (activeCategory == null) {
+            Text("МОИ ДЕЛА", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+            Text("Выберите раздел", color = orgMuted, fontSize = 13.sp)
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = orgCard),
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("РАЗДЕЛ", color = orgMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                ExposedDropdownMenuBox(
-                    expanded = categoryMenu,
-                    onExpandedChange = { categoryMenu = it }
+            organizerCategories.chunked(2).forEach { pair ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    OutlinedTextField(
-                        value = category,
-                        onValueChange = {},
-                        readOnly = true,
-                        singleLine = true,
-                        label = { Text("Выбрать категорию") },
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryMenu)
-                        },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = orgAccent,
-                            unfocusedBorderColor = orgBorder,
-                            focusedLabelColor = orgAccent,
-                            unfocusedLabelColor = orgMuted
-                        )
-                    )
-                    ExposedDropdownMenu(
-                        expanded = categoryMenu,
-                        onDismissRequest = { categoryMenu = false }
-                    ) {
-                        organizerCategories.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option) },
-                                onClick = {
+                    pair.forEach { option ->
+                        val categoryItems = items.filter { it.category == option }
+                        val doneCount = categoryItems.count { it.done }
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(128.dp)
+                                .clickable {
                                     category = option
-                                    categoryMenu = false
                                     clearForm()
-                                }
-                            )
+                                },
+                            colors = CardDefaults.cardColors(containerColor = orgCard),
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxSize().padding(13.dp),
+                                verticalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    organizerCategoryIcon(option),
+                                    fontSize = 24.sp,
+                                    color = orgAccent
+                                )
+                                Text(
+                                    option,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White,
+                                    maxLines = 2
+                                )
+                                Text(
+                                    if (option == "Заметки") "${categoryItems.size} заметок  ›" else if (option == "Долги") "${categoryItems.count { !it.done }} активных  ›" else "$doneCount / ${categoryItems.size} выполнено  ›",
+                                    fontSize = 11.sp,
+                                    color = orgMuted
+                                )
+                            }
                         }
                     }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
                 }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Выполнено", color = orgMuted, fontSize = 13.sp)
-                    Text("$completed / ${visible.size}", color = orgAccent, fontWeight = FontWeight.Bold)
-                }
-                LinearProgressIndicator(
-                    progress = { if (visible.isEmpty()) 0f else completed.toFloat() / visible.size },
-                    modifier = Modifier.fillMaxWidth().height(5.dp),
-                    color = orgAccent,
-                    trackColor = orgBorder
-                )
+            }
+        } else {
+            TextButton(onClick = {
+                category = null
+                clearForm()
+            }) {
+                Text("‹  Все разделы", color = orgAccent)
+            }
+            Text(activeCategory, color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = orgCard),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (activeCategory != "Заметки") {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Выполнено", color = orgMuted, fontSize = 13.sp)
+                            Text("$completed / ${visible.size}", color = orgAccent, fontWeight = FontWeight.Bold)
+                        }
+                        LinearProgressIndicator(
+                            progress = { if (visible.isEmpty()) 0f else completed.toFloat() / visible.size },
+                            modifier = Modifier.fillMaxWidth().height(5.dp),
+                            color = orgAccent,
+                            trackColor = orgBorder
+                        )
+                    } else {
+                        Text("${visible.size} заметок", color = orgMuted, fontSize = 13.sp)
+                    }
                 Button(
                     onClick = {
                         if (formOpen) clearForm() else {
@@ -163,7 +192,7 @@ fun OrganizerScreen(context: Context) {
                         contentColor = orgBackground
                     )
                 ) {
-                    Text(if (formOpen) "Отменить" else "+ Добавить запись")
+                    Text(if (formOpen) "Отменить" else if (activeCategory == "Заметки") "+ Новая заметка" else "+ Добавить запись")
                 }
             }
         }
@@ -183,15 +212,33 @@ fun OrganizerScreen(context: Context) {
                         color = orgAccent,
                         fontWeight = FontWeight.Bold
                     )
-                    OrganizerInput("Название", title) { title = it }
-                    OrganizerInput("Описание, количество, дозировка или сумма", details) {
-                        details = it
+                    OrganizerInput(if (activeCategory == "Долги") "Кому должен / название долга" else if (activeCategory == "Заметки") "Заголовок заметки" else "Название", title) { title = it }
+                    if (activeCategory == "Долги") {
+                        OrganizerInput("Остаток долга, ₽", debtBalance) { debtBalance = it }
+                        OrganizerInput("Обязательный платёж в месяц, ₽", debtMonthly) { debtMonthly = it }
+                        OrganizerInput("Число платежа (1–31, необязательно)", debtDueDay) { debtDueDay = it }
+                        Text("Если платёж не указан, долг учитывается в общей задолженности, но не вычитается из месячного бюджета.", color = orgMuted, fontSize = 12.sp)
                     }
-                    OrganizerInput("Дата / время (произвольная заметка)", date) {
-                        date = it
+                    if (activeCategory == "Заметки") {
+                        OutlinedTextField(
+                            value = details,
+                            onValueChange = { details = it },
+                            label = { Text("Текст заметки") },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+                            minLines = 6,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = orgAccent,
+                                unfocusedBorderColor = orgBorder
+                            )
+                        )
+                    } else {
+                        OrganizerInput("Описание, количество, дозировка или сумма", details) { details = it }
+                        OrganizerInput("Дата / время", date) { date = it }
                     }
                     val pickerContext = LocalContext.current
-                    OutlinedButton(
+                    if (activeCategory != "Заметки") OutlinedButton(
                         onClick = {
                             val initial = runCatching { LocalDate.parse(date) }
                                 .getOrDefault(LocalDate.now())
@@ -210,21 +257,27 @@ fun OrganizerScreen(context: Context) {
                         Text("Выбрать дату в календаре", color = orgAccent)
                     }
                     Button(
-                        enabled = title.isNotBlank(),
+                        enabled = (title.isNotBlank() || (activeCategory == "Заметки" && details.isNotBlank())) && (activeCategory != "Долги" || (debtBalance.replace(",", ".").toDoubleOrNull()?.let { it > 0 && it.isFinite() } == true && (debtMonthly.isBlank() || debtMonthly.replace(",", ".").toDoubleOrNull()?.let { it >= 0 && it.isFinite() } == true) && (debtDueDay.isBlank() || debtDueDay.toIntOrNull() in 1..31))),
                         modifier = Modifier.fillMaxWidth(),
                         onClick = {
                             val id = editingId
                             if (id == null) {
                                 val nextId = (items.maxOfOrNull { it.id } ?: 0L) + 1L
                                 update(items + OrganizerItem(
-                                    nextId, category, title.trim(), details.trim(), date.trim(), false
+                                    nextId, activeCategory, title.trim().ifBlank { "Без названия" }, details.trim(), if (activeCategory == "Заметки") LocalDate.now().toString() else date.trim(), false,
+                                    if (activeCategory == "Долги") debtBalance.replace(",", ".").toDoubleOrNull() ?: 0.0 else 0.0,
+                                    if (activeCategory == "Долги") debtMonthly.replace(",", ".").toDoubleOrNull() ?: 0.0 else 0.0,
+                                    if (activeCategory == "Долги") debtDueDay.toIntOrNull() ?: 0 else 0
                                 ))
                             } else {
                                 update(items.map { item ->
                                     if (item.id == id) item.copy(
-                                        title = title.trim(),
+                                        title = title.trim().ifBlank { "Без названия" },
                                         details = details.trim(),
-                                        date = date.trim()
+                                        date = if (activeCategory == "Заметки") LocalDate.now().toString() else date.trim(),
+                                        debtBalance = if (activeCategory == "Долги") debtBalance.replace(",", ".").toDoubleOrNull() ?: 0.0 else item.debtBalance,
+                                        debtMonthly = if (activeCategory == "Долги") debtMonthly.replace(",", ".").toDoubleOrNull() ?: 0.0 else item.debtMonthly,
+                                        debtDueDay = if (activeCategory == "Долги") debtDueDay.toIntOrNull() ?: 0 else item.debtDueDay
                                     ) else item
                                 })
                             }
@@ -255,7 +308,7 @@ fun OrganizerScreen(context: Context) {
             }
         }
 
-        visible.sortedWith(compareBy<OrganizerItem> { it.done }.thenBy { it.id })
+        visible.sortedWith(if (activeCategory == "Заметки") compareByDescending<OrganizerItem> { it.id } else compareBy<OrganizerItem> { it.done }.thenBy { it.id })
             .forEach { item ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -267,7 +320,7 @@ fun OrganizerScreen(context: Context) {
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
+                            if (activeCategory != "Заметки") Checkbox(
                                 checked = item.done,
                                 onCheckedChange = { checked ->
                                     update(items.map {
@@ -283,19 +336,26 @@ fun OrganizerScreen(context: Context) {
                                     title = item.title
                                     details = item.details
                                     date = item.date
+                                    debtBalance = if (item.debtBalance > 0) item.debtBalance.toString() else ""
+                                    debtMonthly = if (item.debtMonthly > 0) item.debtMonthly.toString() else ""
+                                    debtDueDay = if (item.debtDueDay > 0) item.debtDueDay.toString() else ""
                                     formOpen = true
                                 },
-                                color = if (item.done) orgMuted else Color.White,
+                                color = if (item.done && activeCategory != "Заметки") orgMuted else Color.White,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 16.sp,
-                                textDecoration = if (item.done) TextDecoration.LineThrough else null
+                                textDecoration = if (item.done && activeCategory != "Заметки") TextDecoration.LineThrough else null
                             )
+                        }
+                        if (activeCategory == "Долги") {
+                            Text("Остаток: ${String.format(java.util.Locale.forLanguageTag("ru-RU"), "%,.0f", item.debtBalance)} ₽", color = orgAccent, fontWeight = FontWeight.Bold)
+                            Text("В месяц: ${String.format(java.util.Locale.forLanguageTag("ru-RU"), "%,.0f", item.debtMonthly.coerceAtMost(item.debtBalance))} ₽" + if (item.debtDueDay in 1..31) " · ${item.debtDueDay}-го числа" else "", color = orgMuted, fontSize = 13.sp)
                         }
                         if (item.details.isNotBlank()) {
                             Text(item.details, color = orgMuted, fontSize = 13.sp)
                         }
                         if (item.date.isNotBlank()) {
-                            Text("Дата / время: ${item.date}", color = orgAccent, fontSize = 12.sp)
+                            Text(if (activeCategory == "Заметки") "Изменено: ${item.date}" else "Дата / время: ${item.date}", color = orgAccent, fontSize = 12.sp)
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = {
@@ -303,6 +363,9 @@ fun OrganizerScreen(context: Context) {
                                 title = item.title
                                 details = item.details
                                 date = item.date
+                                debtBalance = if (item.debtBalance > 0) item.debtBalance.toString() else ""
+                                debtMonthly = if (item.debtMonthly > 0) item.debtMonthly.toString() else ""
+                                debtDueDay = if (item.debtDueDay > 0) item.debtDueDay.toString() else ""
                                 formOpen = true
                             }) {
                                 Text("Изменить", color = orgAccent)
@@ -314,6 +377,7 @@ fun OrganizerScreen(context: Context) {
                     }
                 }
             }
+        }
     }
 
     if (deleteId != null) {
@@ -364,7 +428,10 @@ private fun readOrganizer(raw: String): List<OrganizerItem> = runCatching {
             title = obj.getString("title"),
             details = obj.optString("details"),
             date = obj.optString("date"),
-            done = obj.optBoolean("done")
+            done = obj.optBoolean("done"),
+            debtBalance = obj.optDouble("debtBalance", 0.0).takeIf { it.isFinite() && it >= 0 } ?: 0.0,
+            debtMonthly = obj.optDouble("debtMonthly", 0.0).takeIf { it.isFinite() && it >= 0 } ?: 0.0,
+            debtDueDay = obj.optInt("debtDueDay", 0)
         )
     }
 }.getOrDefault(emptyList())
@@ -380,7 +447,39 @@ private fun writeOrganizer(items: List<OrganizerItem>): String {
                 .put("details", item.details)
                 .put("date", item.date)
                 .put("done", item.done)
+                .put("debtBalance", item.debtBalance)
+                .put("debtMonthly", item.debtMonthly)
+                .put("debtDueDay", item.debtDueDay)
         )
     }
     return array.toString()
+}
+
+private fun organizerCategoryIcon(category: String): String = when (category) {
+    "Покупки на вахту" -> "🛒"
+    "Подарки" -> "🎁"
+    "Лекарства" -> "💊"
+    "Чемодан" -> "🧳"
+    "Планы" -> "📋"
+    "Заметки" -> "📝"
+    "Расходы" -> "💳"
+    "Долги" -> "📑"
+    "Накопления" -> "💰"
+    "Тренировки" -> "🏋"
+    "Питание" -> "🍽"
+    "Вес" -> "⚖"
+    "Сон" -> "🌙"
+    "Настроение" -> "☺"
+    "Отпуск" -> "🏖"
+    "Развлечения" -> "🎮"
+    else -> "▣"
+}
+
+// Public read-only summary for the Finance tab. Uses the existing organizer storage.
+data class VahtaDebt(val name: String, val balance: Double, val monthly: Double, val dueDay: Int)
+fun readVahtaDebts(context: Context): List<VahtaDebt> {
+    val prefs = context.getSharedPreferences("vahta_organizer", Context.MODE_PRIVATE)
+    return readOrganizer(prefs.getString("items", "[]") ?: "[]")
+        .filter { it.category == "Долги" && !it.done && it.debtBalance > 0 }
+        .map { VahtaDebt(it.title, it.debtBalance, it.debtMonthly.coerceAtMost(it.debtBalance), it.debtDueDay) }
 }
