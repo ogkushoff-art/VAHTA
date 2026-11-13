@@ -393,11 +393,11 @@ private fun wageForDays(s: Config, workDays: Int, shiftDays: Int, fraction: Doub
     val foodCompensation = workDays*num(s.foodCompensation)
     val shiftSupplement = if(workDays > 0) num(s.shiftMonthSupplement)*fraction else 0.0
     val taxable = adjusted + safety + oneTime + shiftSupplement + holiday + travel + mvo + if(s.allowanceTaxFree) 0.0 else allowance
-    val free = (if(s.allowanceTaxFree) allowance else 0.0) + foodCompensation
+    val free = if(s.allowanceTaxFree) allowance else 0.0
     val tax = if(s.deductTax) taxable*num(s.tax).coerceIn(0.0,100.0)/100 else 0.0
     val meals = (if(s.mealMode=="monthly" || (s.mealMode.isBlank() && num(s.mealDays)==0.0)) num(s.meals)
         else num(s.meals)*num(s.mealDays))*fraction
-    val deductions = meals + (num(s.enforcement)+num(s.otherDeductions))*fraction
+    val deductions = meals + foodCompensation + (num(s.enforcement)+num(s.otherDeductions))*fraction
     return WageBreakdown(taxable,free,taxable+free,tax,deductions,(taxable+free-tax-deductions).coerceAtLeast(0.0))
 }
 private var shiftDayPreferences: SharedPreferences? = null
@@ -778,9 +778,9 @@ private fun monthTimesheetForecast(s: Config, p: SharedPreferences, month: YearM
     val tax=if(s.deductTax) taxableTotal*num(s.tax).coerceIn(0.0,100.0)/100 else 0.0
     val meals=if(s.mealMode=="monthly" || (s.mealMode.isBlank() && num(s.mealDays)==0.0)) num(s.meals)
         else num(s.meals)*num(s.mealDays)
-    val deductions=meals+num(s.enforcement)+num(s.otherDeductions)
-    return WageBreakdown(taxableTotal,(if(s.allowanceTaxFree) allowance else 0.0)+foodCompensation,
-        taxableTotal+allowance+foodCompensation,tax,deductions,(taxableTotal+allowance+foodCompensation-tax-deductions).coerceAtLeast(0.0))
+    val deductions=meals+foodCompensation+num(s.enforcement)+num(s.otherDeductions)
+    return WageBreakdown(taxableTotal,(if(s.allowanceTaxFree) allowance else 0.0),
+        taxableTotal+(if(s.allowanceTaxFree) allowance else 0.0),tax,deductions,(taxableTotal+(if(s.allowanceTaxFree) allowance else 0.0)-tax-deductions).coerceAtLeast(0.0))
 }
 private fun readHomeOrder(prefs: SharedPreferences): List<String> {
     val defaults=listOf("schedule","counter","payments")
@@ -967,18 +967,18 @@ private fun monthlyIncomeEstimate(s: Config, today: LocalDate): Double? {
 @Composable private fun FinanceSettings(s: Config, onChange: (Config)->Unit) {
     Panel("ПРОФИЛЬ УСЛОВИЙ · ООО «ОЗЕРНОЕ»") {
         Text("Параметры из предоставленных таблиц. Применение изменит только перечисленные настройки; существующие даты, тариф, табель и поступления сохраняются.",color=muted,fontSize=12.sp)
-        Button(onClick={onChange(s.copy(rotation="45×45",hours="11",coefficient="20",north="30",premium="20",allowance="700",safetyBonus="15000",foodCompensation="542.74",annualBonusPercent="15",annualVacationDays="36",tax="13",shiftMonthSupplement="0",deductTax=true,allowanceTaxFree=true,travelMode="day",travelDayRate="4794.96",meals="",mealDays="",mealMode="monthly"))},modifier=Modifier.fillMaxWidth()) { Text("Применить условия Озёрного") }
-        Text("ПБиОТ 15 000 ₽ — сумма из расчётной таблицы, не гарантированная выплата. ЧТС не подставляется. НДФЛ 13% — расчётная ставка профиля; фактический налог зависит от годового дохода. Годовая премия и отпускные не прибавляются автоматически. Питание 542,74 ₽ начисляется за каждый рабочий день отдельно от зарплаты.",color=gold,fontSize=12.sp)
+        Button(onClick={onChange(s.copy(rotation="45×45",hours="11",coefficient="20",north="30",premium="20",allowance="700",safetyBonus="0",foodCompensation="542.74",annualBonusPercent="15",annualVacationDays="36",tax="13",shiftMonthSupplement="0",deductTax=true,allowanceTaxFree=true,travelMode="day",travelDayRate="4794.96",meals="",mealDays="",mealMode="monthly"))},modifier=Modifier.fillMaxWidth()) { Text("Применить условия Озёрного") }
+        Text("Премия за ОТ и ПБ по умолчанию равна 0 ₽ и вводится только вручную. ЧТС не подставляется. НДФЛ 13% — расчётная ставка профиля; фактический налог зависит от годового дохода. Годовая премия и отпускные не прибавляются автоматически. Питание 542,74 ₽ удерживается за каждый рабочий день.",color=gold,fontSize=12.sp)
     }
     Panel("ОТДЕЛЬНЫЕ ВЫПЛАТЫ · СПРАВОЧНО") {
-        Info("Питание за рабочий день (автоматически)",rub(num(s.foodCompensation)))
+        Info("Удержание за питание за рабочий день",rub(num(s.foodCompensation)))
         
-        Text("Вахтовая надбавка 700 ₽ начисляется за день вахты; питание 542,74 ₽ — за рабочий день. Отдельная месячная доплата не применяется.",color=muted,fontSize=12.sp)
+        Text("Вахтовая надбавка 700 ₽ начисляется за день вахты; удержание за питание 542,74 ₽ — за рабочий день. Отдельная месячная доплата не применяется.",color=muted,fontSize=12.sp)
         Field("Годовая премия, % (условная)",s.annualBonusPercent,true) { onChange(s.copy(annualBonusPercent=it)) }
         Field("Отпуск, календарных дней за год",s.annualVacationDays,true) { onChange(s.copy(annualVacationDays=it)) }
         val days = 45.0
-        Info("Питание за 45 рабочих дней (пример)",rub(num(s.foodCompensation)*days))
-        Text("Компенсация питания автоматически включается в прогноз отдельной строкой по рабочим дням; фактическое налогообложение и выплата зависят от расчётного листка. Годовая премия не гарантирована.",color=muted,fontSize=12.sp)
+        Info("Удержание за питание за 45 рабочих дней",rub(num(s.foodCompensation)*days))
+        Text("Питание автоматически удерживается за каждый рабочий день; фактическая сумма зависит от табеля. Годовая премия не гарантирована.",color=muted,fontSize=12.sp)
     }
     Panel("ОПЛАТА ТРУДА") {
         Field("ЧТС, ₽/час",s.hourly,true) { onChange(s.copy(hourly=it)) }
@@ -1074,7 +1074,7 @@ private fun monthlyIncomeEstimate(s: Config, today: LocalDate): Double? {
             }
         }
         Field(if(daily) "Стоимость питания, ₽/день" else "Всего за месяц, ₽",s.meals,true) { onChange(s.copy(meals=it)) }
-        if(daily) Text("Количество дней для удержания питания задаётся отдельно от компенсации Озёрного. Компенсация 542,74 ₽ автоматически начисляется за каждый рабочий день.",color=muted,fontSize=12.sp)
+        if(daily) Text("Количество дней для удержания питания задаётся отдельно от компенсации Озёрного. Питание 542,74 ₽ автоматически удерживается за каждый рабочий день.",color=muted,fontSize=12.sp)
         Text("Удержание за питание: ${rub(if(daily) num(s.meals)*num(s.mealDays) else num(s.meals))}",color=mint,fontSize=15.sp)
         
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
