@@ -15,7 +15,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
       - name: Restore modern organizer and fix gifts
-        run: python3 scripts/restore_organizer.py
+        run: python3 restore_organizer.py
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
