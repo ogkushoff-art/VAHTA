@@ -1065,18 +1065,10 @@ private fun monthlyIncomeEstimate(s: Config, today: LocalDate): Double? {
             Checkbox(checked=s.deductTax,onCheckedChange={onChange(s.copy(deductTax=it))})
             Text("Вычитать НДФЛ из начислений",color=vahtaText,fontSize=13.sp)
         }
-        Text("Как удерживают стоимость питания?",color=vahtaText,fontWeight=FontWeight.SemiBold)
-        val daily=s.mealMode=="daily" || (s.mealMode.isBlank() && num(s.mealDays)>0)
-        listOf("daily" to "За день", "monthly" to "За месяц").forEach { (mode,label) ->
-            Row(Modifier.fillMaxWidth().clickable { onChange(s.copy(mealMode=mode)) },verticalAlignment=Alignment.CenterVertically) {
-                RadioButton(selected=(mode=="daily")==daily,onClick={onChange(s.copy(mealMode=mode))})
-                Text(label,color=vahtaText)
-            }
-        }
-        Field(if(daily) "Стоимость питания, ₽/день" else "Всего за месяц, ₽",s.meals,true) { onChange(s.copy(meals=it)) }
-        if(daily) Text("Количество дней для удержания питания задаётся отдельно от компенсации Озёрного. Питание 542,74 ₽ автоматически удерживается за каждый рабочий день.",color=muted,fontSize=12.sp)
-        Text("Удержание за питание: ${rub(if(daily) num(s.meals)*num(s.mealDays) else num(s.meals))}",color=mint,fontSize=15.sp)
-        
+        Text("Питание удерживается автоматически за каждый рабочий день",color=vahtaText,fontWeight=FontWeight.SemiBold)
+        Text("Стоимость питания: ${rub(num(s.foodCompensation))} за рабочий день",color=muted,fontSize=13.sp)
+        Text("Удержание за питание за 45 рабочих дней: ${rub(num(s.foodCompensation)*45)}",color=mint,fontSize=15.sp)
+
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
             Checkbox(checked=s.allowanceTaxFree,onCheckedChange={onChange(s.copy(allowanceTaxFree=it))})
             Text("Вахтовая надбавка не облагается НДФЛ в пределах установленного лимита (700 ₽/день по РФ)",color=vahtaText,fontSize=13.sp)
