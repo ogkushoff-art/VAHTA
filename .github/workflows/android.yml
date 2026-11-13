@@ -1,38 +1,41 @@
-
 name: Build VAHTA APK
-
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-
+    branches: [main]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-
     steps:
-      - name: Checkout
+      - name: Checkout full history
         uses: actions/checkout@v4
-
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Restore modern organizer and fix gifts
+        run: python3 scripts/restore_organizer.py
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-
       - name: Build APK
         run: gradle :app:assembleDebug --stacktrace
-
+      - name: Save restored organizer after successful build
+        run: |
+          if ! git diff --quiet -- app/src/main/java/com/vahta/app/Organizer.kt; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add app/src/main/java/com/vahta/app/Organizer.kt
+            git commit -m 'Restore v12 organizer; fix gifts display'
+            git push
+          fi
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
